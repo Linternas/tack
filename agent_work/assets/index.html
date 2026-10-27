@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tack · 개발 대시보드</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/dashboard.css">
+  <script src="/common.js" defer></script>
+  <script src="/dashboard.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="개발 대시보드 홈"><span class="brand-symbol">T</span><span>Tack<span class="brand-sub">DEVELOPMENT BOARD</span></span></a>
+    <div class="workspace-label">WORKSPACE <span>LOCAL ONLY</span></div>
+    <nav id="navigation" aria-label="작업 분류"></nav>
+    <a class="nav-item" href="/qa"><span class="nav-icon" aria-hidden="true">☑</span><span>QA 워크플로우</span></a>
+    <div class="sidebar-foot"><span class="dot"></span> 이 기기의 SQLite에 저장<p>브라우저를 닫아도 기록은 유지됩니다.</p></div>
+  <label class="project-picker">프로젝트<select id="project-picker" aria-label="프로젝트 선택"></select></label><a class="nav-item" href="/sessions">작업 재개·세션</a><a class="nav-item" href="/projects">전체 프로젝트</a><a class="nav-item" href="/documents">보관 문서</a></aside>
+  <main>
+    <header class="topbar"><div class="breadcrumb"><span id="current-project">Tack</span> <span>/</span> 개발 현황</div><div class="local-badge"><span class="dot"></span> 커밋 제외 · 로컬 기록</div></header>
+    <div class="page">
+      <section class="page-heading"><div><div class="eyebrow">Tack DEVELOPMENT</div><h1>개발 대시보드</h1><p>문제부터 결정, API, QA까지. 다음에 할 일을 한곳에서.</p></div><div class="heading-actions"><a class="button secondary" href="/api/export" download>JSON 내보내기</a><button class="button primary" id="add-task">＋ 항목 추가</button></div></section>
+      <div id="connection-error" class="banner error" role="alert" hidden></div>
+      <section class="metrics" id="metrics" aria-label="개발 현황 요약"></section>
+      <section class="work-summary"><div><span class="label-small">지금 할 수 있는 일</span><strong id="actionable-count">—</strong><span class="muted" id="work-summary-text">기록을 불러오는 중입니다.</span></div><button class="text-button" id="actionable-toggle" aria-pressed="false">실행 가능한 항목만 보기 →</button></section>
+      <section class="board" aria-label="작업 목록">
+        <div class="board-heading"><div><h2 id="list-title">전체 작업</h2><span id="result-count" class="muted"></span></div><div class="view-controls"><button class="text-button" id="reset-filters">필터 초기화</button><button class="button quiet" id="refresh">↻ 새로고침</button></div></div>
+        <div class="filters"><label class="search-wrap"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="제목, 내용, API 경로 검색" aria-label="작업 검색" autocomplete="off"><kbd>/</kbd></label><select id="status-filter" aria-label="상태 필터"><option value="">모든 상태</option></select><select id="area-filter" aria-label="영역 필터"><option value="">모든 영역</option></select><select id="priority-filter" aria-label="우선순위 필터"><option value="">모든 우선순위</option><option>P1</option><option>P2</option><option>P3</option></select><label class="closed-toggle"><input id="include-closed" type="checkbox"> 완료·보관 포함</label></div>
+        <div class="table-scroll"><table><thead><tr><th class="priority-column">우선순위</th><th>할 일 / 확인할 내용</th><th>분류</th><th>상태</th><th>담당</th><th>최근 확인</th><th aria-label="작업"></th></tr></thead><tbody id="task-rows"><tr><td colspan="7" class="empty">기록을 불러오는 중입니다.</td></tr></tbody></table></div>
+        <footer class="board-footer"><span>확인한 사실과 미확인 내용을 구분해서 기록합니다.</span><span id="saved-at">SQLite · 연결 중</span></footer>
+      </section>
+      <section class="note-strip"><span>기록 기준</span><p>자동 테스트 통과는 실서버·브라우저 QA 완료를 뜻하지 않습니다. 과거 결과는 확인일을 보고 재검증하세요. 외부 티켓 상태는 자동 동기화하지 않습니다.</p></section>
+    </div>
+  </main>
+  <dialog id="detail-panel" class="detail-panel" aria-labelledby="detail-title"><div class="panel-top"><span id="detail-id" class="monospace"></span><button class="icon-button" id="close-detail" aria-label="상세 닫기">×</button></div><div id="detail-content"></div></dialog>
+  <dialog id="editor" aria-labelledby="editor-title">
+    <form id="task-form"><header class="dialog-header"><div><span class="eyebrow">DEVELOPMENT RECORD</span><h2 id="editor-title">항목 추가</h2></div><button class="icon-button" type="button" id="close-editor" aria-label="편집 닫기">×</button></header>
+      <div class="form-body">
+        <p id="editor-error" class="banner error" role="alert" hidden></p>
+        <label><span>제목 <span class="required">*</span></span><input name="title" required maxlength="200" placeholder="무엇을 확인하거나 처리해야 하나요?"></label>
+        <div class="form-grid"><label>분류<select name="category" id="edit-category"></select></label><label>상태<select name="status" id="edit-status"></select></label><label>우선순위<select name="priority"><option>P1</option><option selected>P2</option><option>P3</option></select></label><label>담당 구분<input name="owner" placeholder="FE / BE / 기획 / QA"></label></div>
+        <div class="form-grid two"><label>영역<input name="areas" placeholder="공통, Scope 1, 수자원 (쉼표 구분)"></label><label>최근 확인일<input name="last_checked" type="date"></label></div>
+        <label>한 줄 배경<textarea name="summary" rows="2" placeholder="현재 무엇이 문제이고 왜 필요한가요?"></textarea></label>
+        <label>상세 / API 계약 / 결정할 질문<textarea name="detail" rows="4"></textarea></label>
+        <div class="form-grid two"><label>다음 할 일<textarea name="next_action" rows="3"></textarea></label><label>완료·확인 기준<textarea name="acceptance" rows="3"></textarea></label></div>
+        <div class="form-grid two"><label>선행 항목 ID<input name="blocked_by" placeholder="API-001, DEC-001"></label><label>확인 근거 종류<input name="verification" placeholder="사용자 보고 / 코드 확인 / 실서버 QA 등"></label></div>
+        <label>근거 문서 · 링크 <small>한 줄에 하나: 이름 | 저장소 상대 경로 또는 https URL</small><textarea name="sources" rows="3" placeholder="API 확인 요청 | .vscode/plans/문서.md"></textarea></label>
+        <fieldset id="qa-fields"><legend>QA 실행 기록</legend><label>준비 조건<textarea name="qa_preconditions" rows="2"></textarea></label><label>테스트 절차<textarea name="qa_steps" rows="4"></textarea></label><label>기대 결과<textarea name="qa_expected" rows="3"></textarea></label><label>판정<select name="qa_result" id="edit-qa-result"></select></label><label>실제 결과<textarea name="qa_actual" rows="3" placeholder="실행 환경·계정 별칭·관찰한 결과를 기록하세요."></textarea></label><label>증거<textarea name="qa_evidence" rows="2" placeholder="스크린샷 경로·응답 발췌·확인 링크. 토큰·비밀번호는 기록하지 않습니다."></textarea></label></fieldset>
+        <label>처리·결정 내용 <small>완료 처리할 때 필수</small><textarea name="resolution" rows="3" placeholder="무엇으로 해결했는지, 누가 어떤 결정을 했는지 기록하세요."></textarea></label>
+        <label>이번 변경 메모<textarea name="note" rows="2" placeholder="변경 이력에 함께 저장됩니다."></textarea></label>
+      </div><footer class="dialog-footer"><span>저장하면 SQLite와 변경 이력에 반영됩니다.</span><button type="button" class="button secondary" id="cancel-edit">취소</button><button type="submit" class="button primary" id="save-task">저장</button></footer>
+    </form>
+  </dialog>
+  <dialog id="qa-completion" aria-labelledby="qa-completion-title">
+    <form id="qa-completion-form"><header class="dialog-header"><div><span class="eyebrow">QA RECORD</span><h2 id="qa-completion-title">QA 완료 처리</h2></div><button class="icon-button" type="button" id="close-qa-completion" aria-label="QA 완료 닫기">×</button></header>
+      <div class="form-body">
+        <p id="qa-completion-error" class="banner error" role="alert" hidden></p>
+        <p id="qa-completion-task" class="prose"></p>
+        <p class="muted">직접 확인한 결과를 기록하세요. 저장하면 완료 기록으로 이동합니다.</p>
+        <div class="form-grid two"><label>판정<select name="result" required><option value="passed">통과</option><option value="not_applicable">해당 없음</option></select></label><label>확인일<input name="checked_at" type="date" required></label></div>
+        <label><span>실제 결과 <span class="required">*</span></span><textarea name="actual" required maxlength="30000" rows="4" placeholder="실행 환경과 확인한 결과를 기록하세요. 해당 없음이면 그 이유를 적어주세요."></textarea></label>
+        <label>증거 <small>선택</small><textarea name="evidence" maxlength="30000" rows="2" placeholder="스크린샷 경로·응답 발췌·확인 링크"></textarea></label>
+      </div><footer class="dialog-footer"><span>실제 결과와 완료 이력을 함께 저장합니다.</span><button type="button" class="button secondary" id="cancel-qa-completion">취소</button><button type="submit" class="button primary" id="save-qa-completion">완료 저장</button></footer>
+    </form>
+  </dialog>
+  <dialog id="source-dialog" aria-labelledby="source-title"><header class="dialog-header"><h2 id="source-title">근거 문서</h2><button class="icon-button" id="close-source" aria-label="문서 닫기">×</button></header><pre id="source-text"></pre></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>

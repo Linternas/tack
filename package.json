@@ -1,0 +1,30 @@
+{
+  "name": "@linternas/tack",
+  "version": "0.1.0",
+  "description": "Local task and session records with an optional dashboard",
+  "bin": {
+    "tack": "bin/tack.cjs"
+  },
+  "files": [
+    "bin/",
+    "agent_work/**/*.py",
+    "agent_work/assets/",
+    "templates/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test:setup": "python3 -m unittest discover -s tests -p test_setup.py -v",
+    "test": "python3 -m unittest discover -s tests -p 'test_*.py' -v"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Linternas/tack.git"
+  },
+  "homepage": "https://github.com/Linternas/tack",
+  "bugs": {
+    "url": "https://github.com/Linternas/tack/issues"
+  }
+}

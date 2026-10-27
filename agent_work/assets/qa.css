@@ -1,0 +1,62 @@
+.qa-page { max-width: 1700px; }
+.qa-overview { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; padding: 18px 22px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); margin-bottom: 20px; }
+.qa-overview > div:not(.qa-progress) { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.qa-overview strong { font-size: 24px; }
+.qa-progress { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; }
+.qa-progress progress { width: 100%; height: 7px; accent-color: var(--green); border: 0; border-radius: 8px; }
+.qa-progress span { white-space: nowrap; }
+.qa-workspace { display: grid; grid-template-columns: 275px minmax(0, 1fr); gap: 18px; align-items: start; }
+.qa-catalog, .qa-scenario { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); min-width: 0; }
+.qa-catalog { position: sticky; top: 18px; overflow: hidden; }
+.qa-catalog-heading { display: flex; justify-content: space-between; padding: 18px 16px 12px; }
+.qa-search { display: flex; flex-direction: column; gap: 5px; margin: 0 14px 10px; }
+.qa-search input { width: 100%; }
+.qa-filters { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; padding: 0 14px 14px; }
+.qa-filters select { min-width: 0; font-size: 11px; width: 100%; }
+.qa-scenario-list { max-height: 65dvh; overflow-y: auto; border-top: 1px solid var(--line); }
+.scenario-item { display: block; width: 100%; background: var(--surface); border: 0; border-bottom: 1px solid var(--line); border-left: 3px solid transparent; text-align: left; padding: 14px 13px; }
+.scenario-item:last-child { border-bottom: 0; }
+.scenario-item:hover { background: var(--soft); }
+.scenario-item.active { background: var(--green-soft); border-left-color: var(--green); }
+.scenario-item strong { display: block; font-size: 12px; font-weight: 600; line-height: 1.65; overflow-wrap: anywhere; margin: 6px 0; }
+.scenario-item-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 10px; color: var(--muted); }
+.qa-empty { padding: 35px 20px; text-align: center; color: var(--muted); font-size: 12px; }
+.qa-empty p { line-height: 1.8; }
+.scenario-header { padding: 23px 24px 19px; border-bottom: 1px solid var(--line); }
+.scenario-heading { display: flex; align-items: start; justify-content: space-between; gap: 14px; }
+.scenario-heading h2 { font-size: 20px; line-height: 1.6; margin: 10px 0 0; overflow-wrap: anywhere; }
+.scenario-actions { display: flex; flex-wrap: wrap; gap: 7px; justify-content: end; flex-shrink: 0; }
+.scenario-header > p { margin: 11px 0 0; }
+.scenario-navigation { display: flex; align-items: center; justify-content: space-between; margin-top: 17px; gap: 12px; }
+.qa-execution { display: grid; grid-template-columns: minmax(0, 1fr) 280px; }
+.qa-instructions { padding: 22px 24px; min-width: 0; }
+.qa-instructions section + section { margin-top: 24px; }
+.qa-instructions h3, .qa-result h3 { font-size: 13px; margin: 0 0 11px; }
+.qa-instructions .prose { font-size: 12px; }
+.qa-step-list { list-style: none; counter-reset: qa-step; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 11px; }
+.qa-step-list li { counter-increment: qa-step; display: flex; gap: 11px; align-items: flex-start; padding: 13px; border: 1px solid var(--line); border-radius: 8px; }
+.qa-step-list li::before { content: counter(qa-step); display: grid; place-items: center; flex: 0 0 23px; height: 23px; border-radius: 50%; background: var(--green-soft); color: var(--green); font-size: 11px; font-weight: 700; }
+.qa-step-list li span { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.9; }
+.qa-expected { padding: 15px; border-radius: 8px; background: var(--green-soft); }
+.qa-result { border-left: 1px solid var(--line); padding: 22px 19px; background: var(--soft); border-radius: 0 0 var(--radius) 0; }
+.qa-result form { display: flex; flex-direction: column; gap: 14px; }
+.qa-result label { display: flex; flex-direction: column; gap: 6px; font-size: 11px; font-weight: 600; }
+.qa-result select, .qa-result input, .qa-result textarea { width: 100%; font-weight: 400; }
+.qa-result textarea { min-height: 115px; }
+.qa-result p { margin: 0; font-size: 11px; line-height: 1.8; }
+.qa-result fieldset { padding: 0; border: 0; margin: 0; }
+.qa-result-buttons { display: flex; flex-direction: column; gap: 8px; }
+.qa-history { border-top: 1px solid var(--line); padding: 16px 24px; font-size: 11px; }
+.qa-history summary { cursor: pointer; color: var(--muted); }
+.qa-history ol { padding-left: 16px; margin-bottom: 0; }
+.qa-history li { padding-top: 10px; color: var(--muted); }
+.qa-history p { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--ink); }
+.qa-blocker { margin-bottom: 20px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--soft); }
+.qa-blocker p { margin: 0 0 7px; font-size: 11px; }
+.qa-blocker ul { margin: 0; padding-left: 17px; font-size: 11px; line-height: 1.9; }
+.qa-source-list { display: flex; flex-direction: column; gap: 8px; }
+.qa-source-list code { font-size: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+#scenario-editor { width: 700px; max-width: calc(100vw - 32px); max-height: 92dvh; }
+@media (max-width: 1350px) { .qa-execution { grid-template-columns: 1fr; } .qa-result { border-left: 0; border-top: 1px solid var(--line); border-radius: 0; } .qa-result-buttons { flex-direction: row; } .qa-workspace { grid-template-columns: 250px minmax(0, 1fr); } }
+@media (max-width: 850px) { .qa-catalog { top: 10px; } .scenario-heading { flex-direction: column; } .scenario-actions { justify-content: start; } .qa-overview { gap: 12px; padding: 16px; } .qa-overview > div:not(.qa-progress) { flex-direction: column; align-items: start; gap: 3px; } }
+@media (max-width: 650px) { .qa-workspace { grid-template-columns: 1fr; } .qa-catalog { position: static; } .qa-scenario-list { max-height: 240px; } .qa-progress { align-items: start; flex-direction: column; gap: 6px; } .qa-progress span { white-space: normal; } .qa-overview { gap: 8px; } .qa-overview strong { font-size: 22px; } .scenario-header, .qa-instructions { padding: 18px; } .qa-result { padding: 20px 18px; } .qa-result-buttons { flex-direction: column; } .scenario-heading h2 { font-size: 18px; } }

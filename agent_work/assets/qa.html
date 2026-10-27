@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>QA 워크플로우 · Tack</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/dashboard.css">
+  <link rel="stylesheet" href="/qa.css">
+  <script src="/common.js" defer></script>
+  <script src="/qa.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="개발 대시보드 홈"><span class="brand-symbol">W</span><span>Tack<span class="brand-sub">DEVELOPMENT BOARD</span></span></a>
+    <div class="workspace-label">WORKSPACE <span>LOCAL ONLY</span></div>
+    <nav aria-label="작업 분류"><a class="nav-item" href="/"><span class="nav-icon" aria-hidden="true">▦</span>개발 대시보드</a><a class="nav-item active" href="/qa" aria-current="page"><span class="nav-icon" aria-hidden="true">☑</span>QA 워크플로우</a></nav>
+    <div class="sidebar-foot"><span class="dot"></span> 기록은 자동으로 보관됩니다.<p>결과를 입력한 뒤 저장을 눌러주세요.</p></div>
+  <label class="project-picker">프로젝트<select id="project-picker" aria-label="프로젝트 선택"></select></label><a class="nav-item" href="/sessions">작업 재개·세션</a><a class="nav-item" href="/projects">전체 프로젝트</a><a class="nav-item" href="/documents">보관 문서</a></aside>
+  <main>
+    <header class="topbar"><div class="breadcrumb"><a href="/">개발 대시보드</a><span>/</span>QA 워크플로우</div><span id="saved-at" class="muted">기록을 불러오는 중</span></header>
+    <div class="page qa-page">
+      <section class="page-heading"><div><div class="eyebrow">MANUAL QA</div><h1>QA 워크플로우</h1><p>시나리오를 보고 따라 한 뒤, 확인한 결과와 발견한 문제를 기록하세요.</p></div><div class="heading-actions"><button class="button secondary" id="refresh">↻ 새로고침</button><button class="button primary" id="add-scenario">＋ 시나리오 추가</button></div></section>
+      <div id="connection-error" class="banner error" role="alert" hidden></div>
+      <section class="qa-overview" aria-label="QA 진행 현황"><div><span class="muted">전체 시나리오</span><strong id="total-count">—</strong></div><div><span class="muted">남은 시나리오</span><strong id="remaining-count">—</strong></div><div><span class="muted">완료</span><strong id="completed-count">—</strong></div><div><span class="muted">문제 있음</span><strong id="failed-count">—</strong></div><div class="qa-progress"><progress id="qa-progress" value="0" max="1" aria-label="QA 완료율"></progress><span id="progress-text" class="muted">준비 조건 → 테스트 절차 → 결과 기록</span></div></section>
+      <div class="qa-workspace">
+        <section class="qa-catalog" aria-labelledby="catalog-title">
+          <div class="qa-catalog-heading"><h2 id="catalog-title">시나리오</h2><span id="result-count" class="muted"></span></div>
+          <label class="qa-search"><span class="muted">검색</span><input id="search" type="search" placeholder="제목·절차·문제 메모 검색" autocomplete="off"></label>
+          <div class="qa-filters"><select id="result-filter" aria-label="진행 필터"><option value="remaining">남은 시나리오</option><option value="all">전체 시나리오</option><option value="failed">문제 있음</option><option value="done">완료</option><option value="archived">삭제한 시나리오</option></select><select id="area-filter" aria-label="영역 필터"><option value="">모든 영역</option></select></div>
+          <div id="scenario-list" class="qa-scenario-list" aria-label="QA 시나리오 목록"><p class="qa-empty">불러오는 중입니다.</p></div>
+        </section>
+        <article id="scenario-content" class="qa-scenario" aria-live="polite"><div class="qa-empty"><h2>시나리오를 선택하세요</h2><p>왼쪽 목록에서 테스트할 시나리오를 선택하면 절차를 볼 수 있습니다.</p></div></article>
+      </div>
+    </div>
+  </main>
+  <dialog id="scenario-editor" aria-labelledby="editor-title">
+    <form id="scenario-form"><header class="dialog-header"><div><span class="eyebrow">QA SCENARIO</span><h2 id="editor-title">시나리오 추가</h2></div><button class="icon-button" type="button" id="close-editor" aria-label="시나리오 편집 닫기">×</button></header>
+      <div class="form-body">
+        <p id="editor-error" class="banner error" role="alert" hidden></p>
+        <label><span>시나리오 이름 <span class="required">*</span></span><input name="title" required maxlength="200" placeholder="예: 입력값 저장 후 새로고침"></label>
+        <label>영역<input name="areas" placeholder="예: Scope 1, 수자원 (쉼표 구분)"></label>
+        <label>시나리오 설명<textarea name="summary" rows="2" maxlength="30000" placeholder="어떤 기능을 확인하는 테스트인가요?"></textarea></label>
+        <label><span>준비 조건 / 진입 방법 <span class="required">*</span></span><textarea name="preconditions" required rows="3" maxlength="30000" placeholder="실행할 화면, 계정 역할, 준비할 데이터를 적어주세요."></textarea></label>
+        <label><span>테스트 절차 <span class="required">*</span></span><small>한 줄에 한 단계씩 입력하세요. 번호는 자동으로 표시됩니다.</small><textarea name="steps" required rows="6" maxlength="30000" placeholder="대상 행에서 값을 입력한다.&#10;저장 후 새로고침한다.&#10;같은 행의 값을 다시 확인한다."></textarea></label>
+        <label><span>기대 결과 <span class="required">*</span></span><textarea name="expected" required rows="3" maxlength="30000" placeholder="어떤 결과가 나와야 통과인가요?"></textarea></label>
+        <label>주의할 점 / 추가 안내<textarea name="detail" rows="3" maxlength="30000"></textarea></label>
+      </div><footer class="dialog-footer"><span>실행 결과는 바꾸지 않고 시나리오를 저장합니다.</span><button type="button" class="button secondary" id="cancel-editor">취소</button><button type="submit" class="button primary" id="save-scenario">시나리오 저장</button></footer>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
