@@ -129,30 +129,8 @@ def setup(source, home, environ):
         raw = rc.read_text() if rc.exists() else ''
         line = 'export PATH="$HOME/.local/bin:$PATH"'
         plan.append((rc, raw if line in raw else raw.rstrip() + '\n\n# Tack\n' + line + '\n'))
-    # Content-addressed runtime survives npm cache eviction and preserves prior versions.
-    EXTENSION_MODULES={'harness.py','harness_cli.py','orchestration.py','orchestration_cli.py','team.py','crewset.py'}
-    EXTENSION_ASSETS={'goals.html','goals.js','goals.css','plan.schema.json','verdict.schema.json','brief.schema.json','crewset.roles.json','crewset.LICENSE'}
-    files = sorted(p for p in (source / 'agent_work').rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix != '.pyc' and p.name not in EXTENSION_MODULES | EXTENSION_ASSETS)
-    digest = hashlib.sha256()
-    for p in files:
-        digest.update(str(p.relative_to(source)).encode()); digest.update(p.read_bytes())
-    runtime = home / '.local/lib/tack/releases' / digest.hexdigest()[:20]
-    if runtime.exists():
-        for p in files:
-            target = runtime / p.relative_to(source)
-            if not target.exists() or target.read_bytes() != p.read_bytes():
-                raise ValueError(f'기존 runtime 내용이 다릅니다: {runtime}')
-    else:
-        runtime.parent.mkdir(parents=True, exist_ok=True)
-        staging = Path(tempfile.mkdtemp(prefix='.install-', dir=runtime.parent))
-        try:
-
-            for p in files:
-                dest=staging/p.relative_to(source);dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(p,dest)
-            staging.rename(runtime)
-        finally:
-            if staging.exists():
-                shutil.rmtree(staging)
+    from .installation import runtime as stage_runtime, launcher as runtime_launcher, package_version
+    runtime=stage_runtime(source,home/'.local/lib/tack/releases',core=True)
     backups = []
     # Probe the actual data directory, preserving all existing DBs and records.
     data.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -163,13 +141,15 @@ def setup(source, home, environ):
     for target in sorted(set(removals)):
         backup=target.with_name(target.name+'.agent-work-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.bak')
         target.rename(backup);backups.append(str(backup))
-    command = f'#!{sys.executable}\nimport sys\nsys.path.insert(0, {str(runtime)!r})\nfrom agent_work.cli import main\nmain()\n'
+    command=runtime_launcher(runtime)
     replace(launcher, command, backups)
     launcher.chmod(0o755)
     if keep_legacy:
         replace(legacy, command, backups)
         legacy.chmod(0o755)
-    return {'launcher': str(launcher), 'runtime': str(runtime), 'data': str(data),
+    version=package_version(source)
+    replace(home/'.local/lib/tack/install.json',json.dumps({'format':1,'version':version,'runtime':str(runtime)},indent=2)+'\n',backups)
+    return {'version':version,'launcher': str(launcher), 'runtime': str(runtime), 'data': str(data),
             'legacy_launcher': str(legacy) if keep_legacy else None,
             'codex_homes': [str(p) for p in homes], 'backups': backups,
             'next': '프로젝트에서 tack task add "작업 이름". 현재 셸에서는 ~/.local/bin/tack 또는 npx 패키지 명령 사용.',

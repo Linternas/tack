@@ -22,9 +22,12 @@ def payload(path):
 
 def parser():
     p=argparse.ArgumentParser(prog='tack',description='프로젝트별 작업·세션 관리. Dashboard는 선택 사항입니다.')
+    from . import __version__
+    p.add_argument('--version',action='version',version='Tack '+__version__)
     p.add_argument('--workspace',default=str(Path.cwd()))
     p.add_argument('--project',help='전역 프로젝트 ID')
     sub=p.add_subparsers(dest='command',required=True)
+    update=sub.add_parser('update',help='초기 설정을 재실행하지 않고 설치본 일괄 갱신');update.add_argument('--source',type=Path,help='개발용 로컬 Tack 소스 폴더')
     init=sub.add_parser('init'); init.add_argument('--local',action='store_true'); init.add_argument('--name'); init.add_argument('--link'); init.add_argument('--source-root',action='append')
     sub.add_parser('projects').add_argument('--all',action='store_true',help='보관 프로젝트 포함')
     project_actions=sub.add_parser('project').add_subparsers(dest='project_action',required=True)
@@ -61,6 +64,11 @@ def parser():
 
 
 def run(args):
+    if args.command=='update':
+        from .update import update
+        result=update(args.source);emit(result)
+        if result.get('errors'):raise BoardError('일부 설치본 업데이트에 실패했습니다. 출력의 errors를 확인해주세요.',409)
+        return
     if args.command=='hook':
         from .tracking import hook_command
         return emit(hook_command(payload(args.input)))

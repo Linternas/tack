@@ -13,6 +13,7 @@ if (!python) {
   process.exit(1);
 }
 const args = process.argv.slice(2);
+if (args[0] === 'update' && !args.includes('--source')) args.push('--source', root);
 const setup = args.length === 0 || args[0] === 'setup';
 if (setup && args.length > 1) {
   console.error('사용법: tack setup (현재 사용자에게 설치; 기존 DB 유지)');

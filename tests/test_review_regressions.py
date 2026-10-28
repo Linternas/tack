@@ -127,7 +127,7 @@ class ReviewRegressions(unittest.TestCase):
         b=self.orch.draft('B',{});self.assertNotIn('role_guidance',b);self.assertNotIn('role_skills',b)
     def test_stock_skill_upgrade_legacy_and_custom_preservation(self):
         old=install(SOURCE,self.workspace);skill=self.workspace/'.agents/skills/tack-orchestration/SKILL.md';old_bytes=skill.read_bytes();installed_store=Store(old['data']);existing=installed_store.write({'title':'Preserve existing data'})['task']
-        source=self.root/'updated';shutil.copytree(SOURCE/'agent_work',source/'agent_work');shutil.copytree(SOURCE/'templates',source/'templates')
+        source=self.root/'updated';source.mkdir();shutil.copy2(SOURCE/'package.json',source/'package.json');shutil.copytree(SOURCE/'agent_work',source/'agent_work');shutil.copytree(SOURCE/'templates',source/'templates')
         (source/'templates/tack-orchestration.md').write_bytes(old_bytes+b'\nUpdated stock guidance.\n')
         # Legacy marker has no saved hash, but known shipped stock is recognised.
         skill.write_bytes(old_bytes.split(b'\nGoal-specific role guidance')[0])
