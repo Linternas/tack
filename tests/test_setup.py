@@ -121,6 +121,20 @@ class SetupTests(unittest.TestCase):
         self.assertNotIn('`work` CLI', agents.read_text())
         self.assertEqual(result['data'], str(self.home / '.local/share/agent-work'))
 
+    def test_shared_account_skill_is_backed_up_only_once(self):
+        import agent_work.setup as module
+        stock='known stock orchestration skill'
+        target=self.home/'.codex/skills/tack-orchestration/SKILL.md';target.parent.mkdir(parents=True);target.write_text(stock)
+        alias=self.home/'Library/Application Support/orca/codex-accounts/a/home/skills/tack-orchestration';alias.parent.mkdir(parents=True);alias.symlink_to(target.parent,target_is_directory=True)
+        original=module.hashlib.sha256
+        from unittest.mock import patch
+        class StockDigest:
+            def hexdigest(self):return '1217aed5a2eca74ee4eafd0cd3e875b7b3506655edc5b60533770b90ae2d583b'
+        def digest(value=b''):
+            return StockDigest() if value==stock.encode() else original(value)
+        with patch.object(module.hashlib,'sha256',side_effect=digest):result=setup(SOURCE,self.home,self.env)
+        self.assertFalse(target.exists());self.assertEqual(len([p for p in result['backups'] if 'tack-orchestration' in p]),1)
+
     def test_unrelated_work_command_is_not_overwritten(self):
         legacy = self.home / '.local/bin/work'; legacy.parent.mkdir(parents=True)
         legacy.write_text('someone else owns this')

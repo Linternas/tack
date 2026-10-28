@@ -1,0 +1,30 @@
+const {test}=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');const Module=require('node:module');const original=Module._load;Module._load=function(name,...args){return name==='canvas'?{}:original.call(this,name,...args);};const {JSDOM}=Module.createRequire(require.resolve('jest-environment-jsdom',{paths:[process.env.AGENT_WORK_JSDOM_ROOT||process.cwd()]}))('jsdom');Module._load=original;
+const asset=n=>fs.readFileSync(path.join(__dirname,'../agent_work/assets',n),'utf8');const tick=async()=>{await new Promise(setImmediate);await new Promise(setImmediate);};
+function setup(t,{mutate,delay}={}){
+ const dom=new JSDOM(asset('projects.html'),{url:'http://127.0.0.1:8788/projects?project=old-selection',runScripts:'outside-only'});t.after(()=>dom.window.close());const w=dom.window;const calls=[];
+ const list=[{id:'A',name:'<b>Alpha</b>',workspace:'/project/a',status:'active',version:1,open_tasks:2,done_tasks:1,active_sessions:0},{id:'B',name:'Beta',workspace:'/project/b',status:'archived',version:2,open_tasks:0,done_tasks:3,active_sessions:0}];
+ const detail=id=>({...list.find(p=>p.id===id),counts:{tasks:3,sessions:2,goals:1,documents:4},backup_paths:['/managed/backups'],preserved:['프로젝트 소스 폴더','Codex·Orca 원본 대화'],can_archive:true});
+ w.fetch=async(url,options={})=>{calls.push([url,options]);if(options.method)return mutate?mutate(url,JSON.parse(options.body)):{ok:true,json:async()=>({remaining_backup_paths:[]})};if(url==='/api/projects'||url==='/api/projects?all=1')return {ok:true,json:async()=>({projects:url.includes('all=1')?list:list.filter(p=>p.status==='active')})};const id=url.split('/').at(-1);if(delay)return delay(id,detail(id));return {ok:true,json:async()=>detail(id)};};w.eval(asset('projects.js'));return {w,calls,$:id=>w.document.getElementById(id)};
+}
+const submit=(w,form)=>form.dispatchEvent(new w.Event('submit',{cancelable:true}));
+test('default list excludes archives, escapes names, and includes archives on request',async t=>{
+ const {w,calls,$}=setup(t);await tick();assert.equal($('project-list').children.length,1);assert.equal($('project-list').querySelector('b'),null);assert.match($('project-list').textContent,/<b>Alpha/);$('show-archived').checked=true;$('show-archived').dispatchEvent(new w.Event('change'));await tick();assert.equal($('project-list').children.length,2);assert.match($('project-list').textContent,/보관 해제/);assert.equal(calls.at(-1)[0],'/api/projects?all=1');
+});
+test('archive and restore submit owning project and latest preview version',async t=>{
+ const {w,calls,$}=setup(t);await tick();$('project-list').querySelector('[data-project="A"] button').click();await tick();assert.match($('project-action-counts').textContent,/세션: 2/);submit(w,$('project-action-form'));await tick();let post=calls.find(([,o])=>o.method);assert.equal(post[0],'/api/projects/A/archive');assert.deepEqual(JSON.parse(post[1].body),{version:1});
+ $('show-archived').checked=true;$('show-archived').dispatchEvent(new w.Event('change'));await tick();$('project-list').querySelector('[data-project="B"] button').click();await tick();submit(w,$('project-action-form'));await tick();post=calls.filter(([,o])=>o.method).at(-1);assert.equal(post[0],'/api/projects/B/restore');assert.equal(JSON.parse(post[1].body).version,2);
+});
+test('permanent deletion shows scope and requires exact name plus explicit backup choice',async t=>{
+ const {w,calls,$}=setup(t);await tick();$('show-archived').checked=true;$('show-archived').dispatchEvent(new w.Event('change'));await tick();$('project-list').querySelector('[data-project="B"]').querySelectorAll('button')[1].click();await tick();assert.match($('project-action-scope').textContent,/セッション|세션/);assert.match($('project-action-preserved').textContent,/원본 대화/);assert.equal($('include-backups').checked,false);
+ $('project-confirmation').value='wrong';submit(w,$('project-action-form'));await tick();assert.equal(calls.filter(([,o])=>o.method).length,0);assert.match($('project-action-error').textContent,/이름/);
+ $('project-confirmation').value='Beta';$('include-backups').checked=true;submit(w,$('project-action-form'));await tick();const [url,o]=calls.find(([,o])=>o.method);assert.equal(url,'/api/projects/B/delete');assert.deepEqual(JSON.parse(o.body),{version:2,confirmation:'Beta',include_backups:true});
+});
+test('conflict preserves confirmation and disables blind retry',async t=>{
+ const {w,$}=setup(t,{mutate:async()=>({ok:false,json:async()=>({error:'프로젝트 상태가 변경됐습니다.'})})});await tick();$('show-archived').checked=true;$('show-archived').dispatchEvent(new w.Event('change'));await tick();$('project-list').querySelector('[data-project="B"]').querySelectorAll('button')[1].click();await tick();$('project-confirmation').value='Beta';submit(w,$('project-action-form'));await tick();assert.equal($('project-confirmation').value,'Beta');assert.match($('project-action-error').textContent,/상태가 변경/);assert.equal($('confirm-project-action').disabled,true);assert.equal($('cancel-project-action').disabled,false);
+});
+test('preview wait or cancellation never submits stale project',async t=>{
+ let release;const {w,$,calls}=setup(t,{delay:async(id,detail)=>new Promise(r=>{release=()=>r({ok:true,json:async()=>detail});})});await tick();$('project-list').querySelector('button').click();await tick();assert.equal($('confirm-project-action').disabled,true);submit(w,$('project-action-form'));$('cancel-project-action').click();release();await tick();submit(w,$('project-action-form'));await tick();assert.equal(calls.filter(([,o])=>o.method).length,0);
+});
+test('active execution blocks archive from preview',async t=>{
+ const {w,$,calls}=setup(t,{delay:async(id,detail)=>({ok:true,json:async()=>({...detail,can_archive:false,blocked_reason:'활성 세션이 있습니다.'})})});await tick();$('project-list').querySelector('button').click();await tick();assert.equal($('confirm-project-action').disabled,true);assert.match($('project-action-error').textContent,/활성 세션/);submit(w,$('project-action-form'));await tick();assert.equal(calls.filter(([,o])=>o.method).length,0);
+});

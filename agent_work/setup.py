@@ -105,6 +105,16 @@ def setup(source, home, environ):
         if target.exists() and target.read_text() != skill and hashlib.sha256(target.read_bytes()).hexdigest() not in LEGACY_SKILL_HASHES:
             raise ValueError(f'기존 handoff-state 스킬이 다릅니다. 보존을 위해 설치 중단: {target}')
         plan.append((target, skill))
+    from .hook_setup import merge_hooks
+    removals=[]
+    stock_skills={'1217aed5a2eca74ee4eafd0cd3e875b7b3506655edc5b60533770b90ae2d583b','70ce1ecd891b3812f932a311ba2fee663c371b344caace1065644c3926abb104','757e98d16e692f9aa6c72addc9312edae042a548ec7e53dafd8a5a3ee5fd880b'}
+    for codex in homes:
+        hooks=codex/'hooks.json'
+        plan.append((hooks,merge_hooks(hooks.read_text() if hooks.exists() else '',home/'.local/bin/tack')))
+        target=codex/'skills/tack-orchestration/SKILL.md'
+        if target.exists():
+            if hashlib.sha256(target.read_bytes()).hexdigest() not in stock_skills:raise ValueError(f'사용자가 수정한 전역 오케스트레이션 스킬을 보존합니다: {target}')
+            removals.append(target.resolve())
     launcher = home / '.local/bin/tack'
     if launcher.exists() and 'from agent_work.cli import main' not in launcher.read_text():
         raise ValueError(f'다른 tack 명령을 덮어쓰지 않습니다: {launcher}')
@@ -120,7 +130,9 @@ def setup(source, home, environ):
         line = 'export PATH="$HOME/.local/bin:$PATH"'
         plan.append((rc, raw if line in raw else raw.rstrip() + '\n\n# Tack\n' + line + '\n'))
     # Content-addressed runtime survives npm cache eviction and preserves prior versions.
-    files = sorted(p for p in (source / 'agent_work').rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix != '.pyc')
+    EXTENSION_MODULES={'harness.py','harness_cli.py','orchestration.py','orchestration_cli.py','team.py','crewset.py'}
+    EXTENSION_ASSETS={'goals.html','goals.js','goals.css','plan.schema.json','verdict.schema.json','brief.schema.json','crewset.roles.json','crewset.LICENSE'}
+    files = sorted(p for p in (source / 'agent_work').rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix != '.pyc' and p.name not in EXTENSION_MODULES | EXTENSION_ASSETS)
     digest = hashlib.sha256()
     for p in files:
         digest.update(str(p.relative_to(source)).encode()); digest.update(p.read_bytes())
@@ -134,7 +146,9 @@ def setup(source, home, environ):
         runtime.parent.mkdir(parents=True, exist_ok=True)
         staging = Path(tempfile.mkdtemp(prefix='.install-', dir=runtime.parent))
         try:
-            shutil.copytree(source / 'agent_work', staging / 'agent_work', ignore=shutil.ignore_patterns('__pycache__', '*.pyc'))
+
+            for p in files:
+                dest=staging/p.relative_to(source);dest.parent.mkdir(parents=True,exist_ok=True);shutil.copy2(p,dest)
             staging.rename(runtime)
         finally:
             if staging.exists():
@@ -146,6 +160,9 @@ def setup(source, home, environ):
     os.close(fd); Path(probe).unlink()
     for path, content in plan:
         replace(path, content, backups)
+    for target in sorted(set(removals)):
+        backup=target.with_name(target.name+'.agent-work-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.bak')
+        target.rename(backup);backups.append(str(backup))
     command = f'#!{sys.executable}\nimport sys\nsys.path.insert(0, {str(runtime)!r})\nfrom agent_work.cli import main\nmain()\n'
     replace(launcher, command, backups)
     launcher.chmod(0o755)
@@ -156,6 +173,7 @@ def setup(source, home, environ):
             'legacy_launcher': str(legacy) if keep_legacy else None,
             'codex_homes': [str(p) for p in homes], 'backups': backups,
             'next': '프로젝트에서 tack task add "작업 이름". 현재 셸에서는 ~/.local/bin/tack 또는 npx 패키지 명령 사용.',
+            'hooks': '설치된 새 Hook은 각 Codex 환경의 /hooks에서 정의 검토 및 신뢰 후 활성화됩니다. 신뢰를 자동 우회하지 않습니다.',
             'active_agents': '이미 실행 중인 에이전트의 권한은 별도입니다. 필요한 유휴 세션만 동일 CODEX_HOME·세션 ID에 --add-dir 데이터경로로 재개하고 실제 저장을 검증하세요.'}
 
 

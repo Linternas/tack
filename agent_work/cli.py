@@ -26,7 +26,13 @@ def parser():
     p.add_argument('--project',help='전역 프로젝트 ID')
     sub=p.add_subparsers(dest='command',required=True)
     init=sub.add_parser('init'); init.add_argument('--local',action='store_true'); init.add_argument('--name'); init.add_argument('--link'); init.add_argument('--source-root',action='append')
-    sub.add_parser('projects')
+    sub.add_parser('projects').add_argument('--all',action='store_true',help='보관 프로젝트 포함')
+    project_actions=sub.add_parser('project').add_subparsers(dest='project_action',required=True)
+    for action in ('show','archive','restore','delete'):
+        item=project_actions.add_parser(action);item.add_argument('id',nargs='?')
+        if action!='show':item.add_argument('--version',type=int,required=True)
+        if action=='delete':
+            item.add_argument('--confirm',required=True,help='삭제할 프로젝트 이름');item.add_argument('--include-backups',action='store_true')
     status=sub.add_parser('status'); status.add_argument('--all',action='store_true')
     task=sub.add_parser('task').add_subparsers(dest='action',required=True)
     add=task.add_parser('add'); add.add_argument('title'); add.add_argument('--category',default='task'); add.add_argument('--json',dest='input')
@@ -41,22 +47,52 @@ def parser():
     show_document=document.add_parser('show'); show_document.add_argument('key')
     import_document=document.add_parser('import'); import_document.add_argument('path'); import_document.add_argument('--kind',default='work',choices=['work','session','legacy_global'])
     sub.add_parser('backup')
-    dash=sub.add_parser('dashboard'); dash.add_argument('--port',type=int,default=8788)
+    dash=sub.add_parser('dashboard'); dash.add_argument('--port',type=int,default=8788); dash.set_defaults(allow_execution=False)
+    if os.environ.get('TACK_HARNESS')=='1' and Path(__file__).with_name('harness.py').is_file():dash.add_argument('--allow-execution',action='store_true',help='이 프로젝트 하네스에서 명시적 실행 제어 허용')
     migrate=sub.add_parser('migrate'); migrate.add_argument('--board',type=Path,required=True)
     migrate.add_argument('--notes',type=Path,action='append',default=[]); migrate.add_argument('--active-note',type=Path,action='append',default=[])
+    hook=sub.add_parser('hook');hook.add_argument('--json',dest='input',default='-')
+    bind=sub.add_parser('bind');bind.add_argument('thread');bind.add_argument('task_id');bind.add_argument('--from-task',dest='expected_task')
+    sub.add_parser('doctor')
+    if os.environ.get('TACK_HARNESS')=='1' and Path(__file__).with_name('harness.py').is_file():
+        from .orchestration_cli import add_parser
+        add_parser(sub)
     return p
 
 
 def run(args):
+    if args.command=='hook':
+        from .tracking import hook_command
+        return emit(hook_command(payload(args.input)))
     if args.command=='projects':
-        return emit(projects())
-    project=by_id(args.project) if args.project else resolve(args.workspace,create=args.command in {'init','migrate'} or (args.command=='task' and args.action=='add'),
+        return emit(projects(args.all))
+    if args.command=='project':
+        from .project_lifecycle import preview, change
+        project=by_id(args.id) if args.id else by_id(args.project) if args.project else resolve(args.workspace)
+        if args.project_action=='show':return emit(preview(project))
+        data={'version':args.version}
+        if args.project_action=='delete':data.update(confirmation=args.confirm,include_backups=args.include_backups)
+        return emit(change(project,args.project_action,data))
+    project=by_id(args.project) if args.project else resolve(args.workspace,create=args.command in {'init','migrate'} or (args.command=='task' and args.action=='add') or (args.command=='goal' and args.goal_action in {'add','draft'}),
         local=getattr(args,'local',False),name=getattr(args,'name',None),link=getattr(args,'link',None),source_roots=getattr(args,'source_root',None))
     if args.command=='migrate':
         from .migration import migrate
         return emit(migrate(project,args.board,args.notes,args.active_note))
-    readonly=args.command in {'status','resume','sessions'} or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action=='show')
+    readonly=(args.command=='settings' and args.settings_action in {'show','catalog'}) or args.command in {'status','resume','sessions','doctor'} or (args.command=='goal' and args.goal_action in {'list','show','messages'}) or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action=='show')
+    from .project_lifecycle import read
+    if not readonly and args.command!='dashboard' and read(project['db_path'])['status']=='archived':raise BoardError('보관 프로젝트는 읽기 전용입니다. project restore로 복원해주세요.',409)
     store=Store(project['db_path'],readonly=readonly)
+    if args.command in {'bind','doctor'}:
+        from .tracking import Tracker
+        tracker=Tracker(store,project['workspace'])
+        if args.command=='bind':
+            tracker.bind(args.thread,args.task_id,args.expected_task);return emit({'thread_id':args.thread,'task_id':args.task_id})
+        return emit({'workspace':project['workspace'],'data_path':str(store.path),'received_hook_events':len(tracker.overview()['observations']),'orchestration':False})
+    if args.command in {'goal','settings'}:
+        from .harness import require_enabled
+        require_enabled(project['workspace'])
+        from .orchestration_cli import dispatch
+        return emit(dispatch(args,project,store,payload))
     if args.command=='init': return emit(project)
     if args.command=='document':
         if args.document_action=='list': return emit({'documents':store.documents()})
@@ -89,7 +125,12 @@ def run(args):
     if args.command=='backup': return emit({'backup':str(store.backup())})
     if args.command=='dashboard':
         from .http import BoardServer
-        server=BoardServer(('127.0.0.1',args.port),store,project)
+        harness=os.environ.get('TACK_HARNESS')=='1' and Path(__file__).with_name('harness.py').is_file()
+        if harness:
+            from .harness import require_enabled
+            require_enabled(project['workspace'])
+        if args.allow_execution and not harness:raise BoardError('실행 제어는 프로젝트 로컬 tack-orchestration으로 시작하세요.')
+        server=BoardServer(('127.0.0.1',args.port),store,project,allow_execution=args.allow_execution,harness=harness)
         print(f'Tack: http://127.0.0.1:{server.server_port}/?project={project["id"]}',flush=True)
         try: server.serve_forever()
         except KeyboardInterrupt: pass
