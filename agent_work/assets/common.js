@@ -10,13 +10,14 @@
   fetch(window.workUrl('/api/context')).then(async (response) => {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error);
+    if (!data.orchestration_enabled) for (const link of document.querySelectorAll('a[href]')) { if (new URL(link.href, location.origin).pathname === '/goals') link.remove(); }
     document.title = `${data.project.name} · Tack`;
     const currentProject = document.getElementById('current-project');
     if (currentProject) currentProject.textContent = data.project.name;
     for (const project of data.projects) {
       const option = document.createElement('option');
       option.value = project.id;
-      option.textContent = project.name;
+      option.textContent = project.name + (project.status === 'archived' ? ' (보관)' : '');
       option.selected = project.id === data.project.id;
       picker?.append(option);
     }

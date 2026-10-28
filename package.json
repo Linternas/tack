@@ -3,7 +3,8 @@
   "version": "0.1.0",
   "description": "Local task and session records with an optional dashboard",
   "bin": {
-    "tack": "bin/tack.cjs"
+    "tack": "bin/tack.cjs",
+    "tack-orchestration": "bin/tack-orchestration.cjs"
   },
   "files": [
     "bin/",

@@ -52,24 +52,30 @@ def registry(readonly=False):
 def decode(row, workspace=None):
     value = dict(row)
     value['source_roots'] = json.loads(value['source_roots']) if isinstance(value['source_roots'],str) else value['source_roots']
+    from .project_lifecycle import read
+    try:value.update(read(value['db_path']))
+    except sqlite3.Error:value.update(status='unavailable',version=0)
     if workspace:
         value['workspace'] = str(workspace)
     return value
 
 
-def projects():
+def projects(include_archived=False):
     if not (home()/'registry.sqlite3').exists():
         return []
     with registry(readonly=True) as db:
-        return [decode(row) for row in db.execute('SELECT * FROM projects ORDER BY name,id')]
+        result=[decode(row) for row in db.execute('SELECT * FROM projects ORDER BY name,id')]
+        return [p for p in result if p['status']!='deleted' and (include_archived or p['status']!='archived')]
 
 
-def by_id(project_id):
+def by_id(project_id,include_deleted=False):
     with registry(readonly=True) as db:
         row = db.execute('SELECT * FROM projects WHERE id=?',(project_id,)).fetchone()
         if not row:
             raise BoardError('프로젝트 ID를 찾을 수 없습니다.',404)
-        return decode(row)
+        project=decode(row)
+        if project['status']=='deleted' and not include_deleted:raise BoardError('삭제한 프로젝트입니다.',410)
+        return project
 
 
 def local_project(root):
@@ -79,8 +85,11 @@ def local_project(root):
     data = json.loads(marker.read_text())
     if not isinstance(data.get('id'),str) or not data['id']:
         raise BoardError('로컬 프로젝트 설정을 확인해주세요.')
-    return {'id':data['id'],'name':data.get('name',root.name),'workspace':str(root),
-            'db_path':str(root/'.agent-work/work.sqlite3'),'source_roots':data.get('source_roots',[])}
+    filename=data.get('db_file','work.sqlite3')
+    if not isinstance(filename,str) or Path(filename).name!=filename or not filename.endswith('.sqlite3'):raise BoardError('로컬 DB 파일명을 확인해주세요.')
+    from .project_lifecycle import read
+    return {**read(root/'.agent-work'/filename),'id':data['id'],'name':data.get('name',root.name),'workspace':str(root),
+            'db_path':str(root/'.agent-work'/data.get('db_file','work.sqlite3')),'source_roots':data.get('source_roots',[])}
 
 
 def resolve(workspace, create=False, local=False, name=None, link=None, source_roots=None):
@@ -88,6 +97,11 @@ def resolve(workspace, create=False, local=False, name=None, link=None, source_r
     # A local marker is explicit and never silently falls back to a global DB.
     existing_local = local_project(root)
     if existing_local:
+        if existing_local['status']=='deleted':
+            if not create:raise BoardError('삭제한 프로젝트입니다. tack init으로 새 프로젝트를 등록하세요.',410)
+            new_id=str(uuid.uuid4());marker=root/'.agent-work/project.json'
+            marker.write_text(json.dumps({'id':new_id,'name':name or root.name,'source_roots':source_roots or [],'db_file':'work-'+new_id+'.sqlite3'},ensure_ascii=False,indent=2)+'\n')
+            return local_project(root)
         if link:
             raise BoardError('로컬 저장 프로젝트는 전역 프로젝트와 중복 연결할 수 없습니다.')
         return existing_local
@@ -111,6 +125,9 @@ def resolve(workspace, create=False, local=False, name=None, link=None, source_r
         row = db.execute('SELECT p.* FROM aliases a JOIN projects p ON p.id=a.project_id WHERE a.path=?',(str(root),)).fetchone()
         if not row:
             row = db.execute('SELECT p.* FROM aliases a JOIN projects p ON p.id=a.project_id WHERE a.path=?',(common,)).fetchone()
+        if row and decode(row)['status']=='deleted':
+            if not create:raise BoardError('삭제한 프로젝트입니다. tack init으로 새 프로젝트를 등록하세요.',410)
+            db.execute('DELETE FROM aliases WHERE project_id=?',(row['id'],));row=None
         if row:
             if link and link != row['id']:
                 raise BoardError('이미 다른 프로젝트에 연결된 경로입니다.')
@@ -122,7 +139,7 @@ def resolve(workspace, create=False, local=False, name=None, link=None, source_r
             return decode(row,root)
         if link:
             row=db.execute('SELECT * FROM projects WHERE id=?',(link,)).fetchone()
-            if not row:
+            if not row or decode(row)['status']=='deleted':
                 raise BoardError('연결할 프로젝트를 찾을 수 없습니다.',404)
             db.execute('INSERT INTO aliases VALUES (?,?)',(str(root),link))
             db.execute('INSERT OR IGNORE INTO aliases VALUES (?,?)',(common,link))
@@ -137,4 +154,4 @@ def resolve(workspace, create=False, local=False, name=None, link=None, source_r
         db.execute('INSERT INTO projects VALUES (?,?,?,?,?)',values)
         db.execute('INSERT INTO aliases VALUES (?,?)',(str(root),project_id))
         db.execute('INSERT OR IGNORE INTO aliases VALUES (?,?)',(common,project_id))
-        return dict(zip(('id','name','workspace','db_path','source_roots'),(*values[:-1],source_roots or [])))
+        return {**dict(zip(('id','name','workspace','db_path','source_roots'),(*values[:-1],source_roots or []))),'status':'active','version':1}

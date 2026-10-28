@@ -181,3 +181,11 @@ legend { font-size: 12px; font-weight: 700; padding: 0 6px; }
 .session-layout label { display: grid; gap: 6px; margin: 12px 0; }
 .session-layout article { padding: 16px; margin: 16px 0; border: 1px solid #dfe4ec; border-radius: 8px; }
 .session-layout nav { display: flex; gap: 16px; flex-wrap: wrap; align-items: center; }
+
+.project-toolbar, .session-layout .inline-choice { display: flex; align-items: center; gap: 8px; }
+#project-list button + button { margin-left: 8px; }
+#project-dialog { width: min(640px, calc(100vw - 32px)); max-height: 85dvh; overflow: auto; }
+#project-action-form { padding: 24px; }
+#project-action-form p { overflow-wrap: anywhere; white-space: pre-line; }
+#project-confirmation { width: 100%; padding: 8px; }
+.button.danger { background: var(--red); color: white; }

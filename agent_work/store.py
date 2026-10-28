@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shared transactional task and session storage."""
 import argparse
-from contextlib import closing, contextmanager
+from contextlib import closing, contextmanager, nullcontext
 import json
 import re
 import sqlite3
@@ -70,7 +70,10 @@ class Store:
     def __init__(self, path, seed_path=None, readonly=False):
         self.path = Path(path).resolve()
         self.readonly = readonly
-        if readonly:
+        from .project_lifecycle import read
+        lifecycle=read(self.path)
+        if lifecycle['status']=='deleted':raise BoardError('삭제한 프로젝트의 기록에는 접근할 수 없습니다.',410)
+        if readonly or lifecycle['status']=='archived':
             if not self.path.is_file():
                 raise BoardError("작업 DB가 없습니다. tack init으로 초기화하세요.",404)
             return
@@ -110,16 +113,16 @@ class Store:
 
     @contextmanager
     def connect(self):
-        db = sqlite3.connect(self.path.as_uri()+"?mode=ro" if self.readonly else self.path, timeout=10, uri=True)
-        db.row_factory = sqlite3.Row
-        if not self.readonly:
-            db.execute("PRAGMA journal_mode=DELETE")
-        db.execute("PRAGMA busy_timeout=10000")
-        try:
+        from .project_lifecycle import access, state
+        with access(self.path,create=not self.readonly), closing(sqlite3.connect(self.path.as_uri()+"?mode=ro" if self.readonly else self.path, timeout=10, uri=True)) as db:
+            db.row_factory = sqlite3.Row
+            lifecycle=state(db)
+            if lifecycle['status']=='deleted':raise BoardError('삭제한 프로젝트의 기록에는 접근할 수 없습니다.',410)
+            if lifecycle['status']=='archived':db.execute('PRAGMA query_only=ON')
+            elif not self.readonly:db.execute("PRAGMA journal_mode=DELETE")
+            db.execute("PRAGMA busy_timeout=10000")
             with db:
                 yield db
-        finally:
-            db.close()
 
     @staticmethod
     def decode(row):
@@ -137,15 +140,16 @@ class Store:
             history = [dict(item) for item in db.execute("SELECT id,action,note,created_at FROM history WHERE task_id=? ORDER BY id DESC", (task_id,))]
             return {"task": self.decode(row), "history": history}
 
-    def write(self, payload, task_id=None):
+    def write(self, payload, task_id=None, *, connection=None):
         if not isinstance(payload, dict) or set(payload) - TASK_FIELDS - {"version", "note"}:
             raise BoardError("저장 요청의 필드를 확인해주세요.")
         note = payload.get("note", "")
         if not isinstance(note, str) or len(note) > 10000:
             raise BoardError("변경 메모를 확인해주세요.")
         now = timestamp()
-        with self.connect() as db:
-            db.execute("BEGIN IMMEDIATE")
+        with (nullcontext(connection) if connection is not None else self.connect()) as db:
+            if connection is None:
+                db.execute("BEGIN IMMEDIATE")
             previous = None
             if task_id:
                 row = db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone()
@@ -171,6 +175,8 @@ class Store:
             else:
                 db.execute("INSERT INTO tasks VALUES (?,?,?,?,?)", (task_id, version, data, now, now))
             db.execute("INSERT INTO history(task_id,action,note,before_data,after_data,created_at) VALUES (?,?,?,?,?,?)", (task_id, "updated" if previous else "created", note, json.dumps(previous, ensure_ascii=False) if previous else None, data, now))
+        if connection is not None:
+            return {"task": {**task, "id":task_id, "version":version, "created_at":previous["created_at"] if previous else now, "updated_at":now}}
         return self.detail(task_id)
 
     def backup(self):
