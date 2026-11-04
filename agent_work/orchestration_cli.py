@@ -15,6 +15,17 @@ def add_parser(sub):
     crew=settings.add_parser('crewset');crew.add_argument('--version',type=int,required=True)
     select=crew.add_mutually_exclusive_group();select.add_argument('--roles');select.add_argument('--from-project',action='store_true')
     settings.add_parser('update').add_argument('--json',dest='input',required=True)
+    crew=sub.add_parser('team',help='직원 업무와 협업 관리').add_subparsers(dest='team_action',required=True)
+    crew.add_parser('list')
+    crew.add_parser('drain')
+    create=crew.add_parser('create');create.add_argument('title');create.add_argument('--acceptance',default='');create.add_argument('--verification-text',default='')
+    show=crew.add_parser('show');show.add_argument('id')
+    for action in ('run','approve','accept'):
+        item=crew.add_parser(action);item.add_argument('id');item.add_argument('--version',type=int,required=True)
+    for action in ('assign','message'):
+        item=crew.add_parser(action);item.add_argument('id');item.add_argument('--json',dest='input',required=True)
+    for action in ('reply','retry'):
+        item=crew.add_parser(action);item.add_argument('id');item.add_argument('job_id');item.add_argument('--json',dest='input',required=True)
     goal=sub.add_parser('goal').add_subparsers(dest='goal_action',required=True)
     goal.add_parser('list')
     for action in ('add','draft'):
@@ -33,7 +44,11 @@ def start(project,key,version,*,approve=False):
     require_enabled(project['workspace'])
     orch=Orchestrator(Store(project['db_path']),project['workspace'])
     goal=orch.goal(key)
-    if goal['version']!=version or goal.get('worker') or goal['status'] not in {'ready','paused','failed','needs_recheck'}:
+    if goal.get('mode')=='team':
+        from .run_queue import enqueue
+        return enqueue(project,key,version)
+    allowed={'ready','paused','failed','needs_recheck'} | ({'awaiting_approval','waiting_answer'} if goal.get('mode')=='team' else set())
+    if goal['version']!=version or goal.get('worker') or goal['status'] not in allowed:
         raise BoardError('최신 목표 상태를 확인해주세요.',409)
     from .team import Team
     orch.require_approval(goal,Team(orch.store).settings(),approve)
@@ -62,6 +77,22 @@ def dispatch(args,project,store,payload):
             from .crewset import apply
             return apply(team,args.version,roles=[r.strip().replace('_','-') for r in args.roles.split(',')] if args.roles is not None else None,workspace=project['workspace'] if args.from_project else None)
         return team.save(payload(args.input))
+    if args.command=='team':
+        from .workforce import Workforce
+        workforce=Workforce(store,project['workspace']);action=args.team_action
+        if action=='drain':
+            from .run_queue import drain
+            return drain(store,project['workspace'])
+        if action=='list':return {'goals':[g for g in orch.overview()['goals'] if g.get('mode')=='team']}
+        if action=='create':return workforce.create(args.title,args.acceptance,args.verification_text)
+        if action=='show':return workforce.snapshot(args.id)
+        if action=='run':return start(project,args.id,args.version)
+        if action=='approve':return workforce.approve(args.id,args.version)
+        if action=='accept':return workforce.accept(args.id,args.version)
+        if action=='assign':return workforce.assign(args.id,payload(args.input))
+        if action=='message':return workforce.message(args.id,payload(args.input))
+        if action=='reply':return workforce.reply(args.id,args.job_id,payload(args.input))
+        if action=='retry':return workforce.retry(args.id,args.job_id,payload(args.input))
     action=args.goal_action
     if action in {'messages','send'}:
         from .team import Team,conversation
@@ -76,7 +107,16 @@ def dispatch(args,project,store,payload):
         return {**goal,'launch':start(project,goal['id'],goal['version'])}
     if action=='show':return orch.goal(args.id)
     if action=='start':return start(project,args.id,args.version,approve=True)
-    if action=='pause':return orch.pause(args.id,args.version)
+    if action=='pause':
+        if orch.goal(args.id).get('mode')=='team':
+            from .run_queue import cancel
+            from .workforce import Workforce
+            return cancel(Workforce(store,project['workspace']),args.id,args.version)
+        return orch.pause(args.id,args.version)
     if action=='reconcile':return orch.reconcile(args.id,args.version)
-    if action=='recover':return orch.recover(args.id,args.version,args.confirmed_stopped)
+    if action=='recover':
+        result=orch.recover(args.id,args.version,args.confirmed_stopped)
+        from .run_queue import wake
+        wake(project)
+        return result
     orch.work(args.id,args.version,approve=args.approve);return orch.goal(args.id)

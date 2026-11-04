@@ -1,6 +1,6 @@
 {
   "name": "@linternas/tack",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Local task and session records with an optional dashboard",
   "bin": {
     "tack": "bin/tack.cjs",

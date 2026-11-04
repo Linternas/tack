@@ -104,3 +104,35 @@ test('settings load delay blocks stale project save and late response cannot rep
   picker.value='owner';picker.dispatchEvent(new w.Event('change'));await tick();assert.equal($('settings-form').elements.implement_model.value,'');resolveB();await tick();assert.equal(picker.value,'owner');assert.equal($('settings-form').elements.implement_model.value,'');
   submit(w,$('settings-form'));await tick();assert.equal(calls.find(([,o])=>o.method)[0],'/api/team/settings?project=owner');
 });
+test('compact goal summary keeps full original text and starts collapsed',async t=>{
+  const g=goal();g.title='아주 긴 개발 요청 '.repeat(20)+'<img src=x>';g.acceptance='완료 조건\n'.repeat(200);const {$}=setup(t,{goals:[g]});await tick();
+  assert.equal($('goal-overview').open,false);assert.equal($('team-dialog').open,false);assert.equal($('composer-settings').open,false);
+  assert.equal($('room-title').textContent,g.title);assert.equal($('room-title').title,g.title);assert.equal($('room-request').textContent,g.title);assert.equal($('room-subtitle').textContent,g.acceptance);assert.equal($('room-request').querySelector('img'),null);
+});
+test('team drawer has explicit controls, escape closes and focus returns',async t=>{
+  const {w,$}=setup(t);await tick();$('open-team').click();assert.equal($('team-dialog').open,true);assert.equal($('open-team').getAttribute('aria-expanded'),'true');
+  $('refresh').click();await tick();assert.equal($('team-dialog').open,true);
+  $('close-team').click();assert.equal($('team-dialog').open,false);assert.equal($('open-team').getAttribute('aria-expanded'),'false');assert.equal(w.document.activeElement,$('open-team'));
+  $('open-team').click();$('team-dialog').dispatchEvent(new w.Event('cancel',{cancelable:true}));assert.equal($('team-dialog').open,false);assert.equal(w.document.activeElement,$('open-team'));
+});
+test('channel change closes old goal details and restores independent composer draft options',async t=>{
+  const {w,$}=setup(t,{goals:[goal(),goal('GOAL-B')]});await tick();$('goal-overview').open=true;$('open-team').click();$('composer-settings').open=true;
+  $('message-kind').value='question';$('message-kind').dispatchEvent(new w.Event('change'));$('message-target').value='implement';$('message-target').dispatchEvent(new w.Event('change'));$('message-body').value='A only';
+  $('channels').querySelector('[data-goal="GOAL-B"]').click();assert.equal($('team-dialog').open,false);assert.equal($('goal-overview').open,false);assert.equal($('open-team').disabled,true);await tick();
+  assert.equal($('composer-settings').open,false);assert.equal($('message-target').value,'');assert.equal($('composer-summary').textContent,'메모 · 대상 없음');
+  $('channels').querySelector('[data-goal="GOAL-A"]').click();await tick();assert.equal($('composer-settings').open,true);assert.equal($('message-body').value,'A only');assert.equal($('message-target').value,'implement');assert.equal($('composer-summary').textContent,'질문 · @구현');
+});
+test('collapsed composer shows selected purpose and target and preserves its request contract',async t=>{
+  const {w,$,calls}=setup(t);await tick();$('message-kind').value='review';$('message-kind').dispatchEvent(new w.Event('change'));assert.equal($('composer-settings').open,false);assert.equal($('composer-summary').textContent,'검토 요청 · @검토');
+  $('message-body').value='Review source.py';submit(w,$('message-form'));await tick();const payload=JSON.parse(calls.find(([,o])=>o.method)[1].body);assert.equal(payload.kind,'review');assert.equal(payload.target,'verify');assert.equal(payload.version,9);
+});
+test('composer grows to its cap and shrinks after successful send',async t=>{
+  const {w,$}=setup(t);await tick();const input=$('message-body');Object.defineProperty(input,'scrollHeight',{get(){return this.value.length>100?400:36;}});
+  input.value='many lines\n'.repeat(30);input.dispatchEvent(new w.Event('input'));assert.equal(input.style.height,'120px');assert.equal(input.style.overflowY,'auto');
+  submit(w,$('message-form'));await tick();assert.equal(input.value,'');assert.equal(input.style.height,'36px');assert.equal(input.style.overflowY,'hidden');
+});
+test('new messages preserve reading position and expanded details on the same goal',async t=>{
+  const {w,$}=setup(t);await tick();const feed=$('chat-feed');Object.defineProperty(feed,'scrollHeight',{get:()=>1500});Object.defineProperty(feed,'clientHeight',{get:()=>300});feed.scrollTop=250;$('goal-overview').open=true;feed.querySelector('details').open=true;
+  const original=w.fetch;w.fetch=async(url,options={})=>url.includes('/chat')?{ok:true,json:async()=>({goal:goal(),settings:policy(),execution_enabled:true,runs:[],messages:[{id:'m1',sender:'user',kind:'goal',body:'original',created_at:'2026-10-28T01:00:00Z'},{id:'m2',sender:'tack',kind:'result',body:'New result',created_at:'2026-10-28T01:01:00Z'}]})}:original(url,options);
+  $('refresh').click();await tick();assert.equal(feed.scrollTop,250);assert.equal($('goal-overview').open,true);assert.equal(feed.querySelector('details[data-message="m1"]').open,true);assert.match(feed.textContent,/New result/);
+});

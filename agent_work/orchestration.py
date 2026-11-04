@@ -221,6 +221,14 @@ class Orchestrator(Tracker):
             db.execute('UPDATE goals SET data=?,version=version+?,updated_at=? WHERE id=?',(json.dumps(current,ensure_ascii=False),0 if set(change)=={'heartbeat'} else 1,timestamp(),key))
         return self.goal(key)
 
+    def add_tokens(self,key,worker,tokens):
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row=db.execute('SELECT data FROM goals WHERE id=?',(key,)).fetchone();data=json.loads(row[0])
+            if data.get('worker')!=worker:raise BoardError('다른 실행 관리자가 소유한 목표입니다.',409)
+            data['token_used']=data.get('token_used',0)+tokens
+            db.execute('UPDATE goals SET data=?,version=version+1,updated_at=? WHERE id=?',(json.dumps(data,ensure_ascii=False),timestamp(),key))
+
     def pause(self,key,version):
         goal=self.goal(key)
         if goal['status'] not in {'running','verifying'}:
@@ -240,6 +248,9 @@ class Orchestrator(Tracker):
             old=next((json.loads(row['data']) for row in db.execute('SELECT data FROM executions WHERE goal_id=? AND task_id=? ORDER BY created_at DESC',(goal['id'],step['task_id'])) if json.loads(row['data']).get('mode','work')==mode),{})
             data={'mode':mode,'kind':goal.get('execution_settings',{}).get('roles',{}).get(step['role'],{}).get('kind',step['role']),'tokens':0,'model':goal.get('execution_settings',{}).get('roles',{}).get(step['role'],{}).get('model',''),'status':'running','role':step['role'],'adapter':'codex-exec','thread_id':old.get('thread_id',''),'event_count':0,'exit_code':None}
             db.execute('INSERT INTO executions VALUES (?,?,?,?,?,?)',(key,goal['id'],step['task_id'],json.dumps(data),now,now))
+        from .usage import Usage
+        phase='question' if mode=='question' else 'revision' if goal.get('auto_rounds') or goal.get('repair_note') or (goal.get('pending_request') or {}).get('kind')=='revision' else 'retry' if old else 'initial'
+        Usage(self.store).start(key,task_id=step['task_id'],goal_id=goal['id'],role=step['role'],model=data['model'],adapter=data['adapter'],phase=phase,round_number=goal.get('auto_rounds',0))
         return key,data
 
     def task_state(self,key,**change):
@@ -300,7 +311,12 @@ class Orchestrator(Tracker):
         if run['thread_id']:argv+=['resume',run['thread_id']]
         argv+=['-']
         team.emit(key,'tack','질문을 전달했습니다.' if question else step['title']+' 작업을 전달했습니다.','handoff',step['role'],{'run_id':run_id,'task_id':step['task_id'],'files':step.get('files',[]),'source':'dispatch'},'start:'+run_id)
-        result=self.process(argv,goal['workspace'],key,worker,run_id,prompt)
+        from .usage import Usage
+        started=time.monotonic();result=None
+        try:
+            result=self.process(argv,goal['workspace'],key,worker,run_id,prompt)
+        finally:
+            Usage(self.store).finish(run_id,result['status'] if result else 'failed',int((time.monotonic()-started)*1000))
         self.run_update(run_id,status=result['status'],exit_code=result['exit_code'],error=result.get('error',''))
         with self.store.connect() as db:data=json.loads(db.execute('SELECT data FROM executions WHERE id=?',(run_id,)).fetchone()[0])
         summary=data.get('review_summary')
@@ -319,12 +335,16 @@ class Orchestrator(Tracker):
 
     def require_approval(self,goal,policy,approve=False):
         self.check_workspace(goal)
+        if goal.get('mode')=='team':return
         request=goal.get('pending_request')
         if goal.get('planning') or request and request['kind']=='question':return
         if not approve and (not goal.get('approved_at') or goal.get('approved_contract')!=self.approval_contract(goal,policy)):
             raise BoardError('최신 계획과 팀 설정을 확인하고 goal start로 명시적으로 승인해주세요.',409)
 
     def work(self,key,version,*,approve=False):
+        if self.goal(key).get('mode')=='team':
+            from .workforce import Workforce
+            return Workforce(self.store,self.workspace).run(key,version)
         from .team import Team
         team=Team(self.store);self.migrate();goal=self.goal(key)
         if goal.get('worker'):raise BoardError('기존 실행 소유자가 있습니다. 상태 확인 후 재개하세요.',409)
@@ -452,13 +472,19 @@ class Orchestrator(Tracker):
                 run_data=json.loads(row['data']);role=run_data.get('role');run_task=row['task_id']
                 verdict_required=not self.goal(goal_id).get('planning') or run_data.get('mode')=='question'
         planning=bool(run_id and self.goal(goal_id).get('planning') and run_data.get('mode')!='question')
+        team_mode=bool(run_id and self.goal(goal_id).get('mode')=='team')
+        team_result=None
         plan_steps=None;brief=None
         verdict=None
         input_file=tempfile.TemporaryFile() if prompt is not None else None
         try:
             if input_file:
                 input_file.write(prompt.encode());input_file.seek(0)
-            proc=subprocess.Popen(argv,cwd=cwd,stdin=input_file if input_file else subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)
+            process_env=None
+            if run_id and self.goal(goal_id).get('mode')=='team' and Path(cwd).resolve()!=Path(self.workspace).resolve():
+                process_env={**os.environ,'GIT_CEILING_DIRECTORIES':str(Path(cwd).resolve().parent)}
+                for name in ('GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR','GIT_INDEX_FILE'):process_env.pop(name,None)
+            proc=subprocess.Popen(argv,cwd=cwd,env=process_env,stdin=input_file if input_file else subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)
         finally:
             if input_file:input_file.close()
         reader=None;stopped=threading.Event()
@@ -513,7 +539,14 @@ class Orchestrator(Tracker):
                             roles={**{r['id']:r['config'] for r in catalog()['roles']},**self.goal(goal_id)['execution_settings']['roles']}
                             if roles.get(plan_steps[-1]['role'],{}).get('kind',plan_steps[-1]['role'])!='verify' or any(not step.get('files') for step in plan_steps):raise BoardError('최종 검증과 파일 범위가 필요합니다.')
                     except (ValueError,TypeError,AttributeError,BoardError):plan_steps=None;brief=None
-                if verdict_required and event.get('type')=='item.completed' and isinstance(item,dict) and item.get('type')=='agent_message':
+                if team_mode and event.get('type')=='item.completed' and isinstance(item,dict) and item.get('type')=='agent_message':
+                    try:
+                        from .workforce import validate_result
+                        team_result=validate_result(json.loads(item.get('text','')))
+                        verdict=True
+                        self.run_update(run_id,review_summary=team_result['summary'])
+                    except (ValueError,TypeError,BoardError):team_result=None;verdict=False
+                if verdict_required and not team_mode and event.get('type')=='item.completed' and isinstance(item,dict) and item.get('type')=='agent_message':
                     try:
                         result=json.loads(item.get('text',''))
                         if isinstance(result,dict) and type(result.get('passed')) is bool and isinstance(result.get('summary'),str):
@@ -526,14 +559,20 @@ class Orchestrator(Tracker):
                 if event.get('type')=='thread.started':
                     thread_id=event.get('thread_id','')
                     if isinstance(thread_id,str) and thread_id:
-                        self.bind(thread_id,run_task)
+                        if team_mode:
+                            from .workforce import Workforce
+                            Workforce(self.store,cwd).bind_thread(goal_id,run_task,role,thread_id,run_data.get('thread_id',''))
+                        else:self.bind(thread_id,run_task)
                 if event.get('type')=='turn.completed':
                     completed=True
-                    usage=event.get('usage',{})
+                    from .usage import Usage
+                    from .usage_adapter import codex_usage
+                    usage=codex_usage(event.get('usage'))
+                    Usage(self.store).turn(run_id,usage)
                     tokens=sum(usage.get(k,0) for k in ('input_tokens','output_tokens') if type(usage.get(k,0)) is int and usage.get(k,0)>=0) if isinstance(usage,dict) else 0
                     run_data['tokens']=run_data.get('tokens',0)+tokens
                     self.run_update(run_id,tokens=run_data['tokens'])
-                    state=self.goal(goal_id);self.update(goal_id,{'token_used':state.get('token_used',0)+tokens},worker=worker)
+                    self.add_tokens(goal_id,worker,tokens)
                 if event.get('type') in {'turn.failed','error'}:
                     failed=True
                     info=event.get('error',{})
@@ -543,7 +582,7 @@ class Orchestrator(Tracker):
             code=proc.wait()
             status='interrupted' if interrupted else ('succeeded' if code==0 and (not run_id or completed and not failed and (not verdict_required or verdict is True) and (not planning or bool(plan_steps) or bool(brief and brief['questions']))) else 'failed')
             if verdict_required and status=='failed' and code==0:error_code='review_rejected_or_missing_verdict' if run_data.get('kind',role) in {'verify','assess'} else 'planning_incomplete' if run_data.get('kind',role)=='plan' else 'implementation_incomplete'
-            return {'status':status,'exit_code':code,'error':error_code or ('interrupted' if interrupted else 'codex_execution_failed' if run_id and code!=0 else 'invalid_plan' if planning and status=='failed' and not plan_steps else ''),'plan_steps':plan_steps,'brief':brief}
+            return {'status':status,'exit_code':code,'error':error_code or ('interrupted' if interrupted else 'codex_execution_failed' if run_id and code!=0 else 'invalid_plan' if planning and status=='failed' and not plan_steps else ''),'plan_steps':plan_steps,'brief':brief,**({'team_result':team_result} if team_mode else {})}
         finally:
             try:os.killpg(proc.pid,signal.SIGTERM)
             except ProcessLookupError:pass
@@ -583,6 +622,13 @@ class Orchestrator(Tracker):
                 data=json.loads(run['data'])
                 if data.get('status')=='running':
                     data['status']='interrupted';db.execute('UPDATE executions SET data=?,updated_at=? WHERE id=?',(json.dumps(data),timestamp(),run['id']))
+            if current.get('mode')=='team':
+                from .workforce import Workforce
+                workforce=Workforce(self.store,self.workspace)
+                for row in db.execute('SELECT id FROM team_jobs WHERE goal_id=?',(key,)).fetchall():
+                    if workforce.job(key,row['id'])['status']=='working':workforce.change(db,row['id'],{'status':'paused'})
+            from .run_queue import recovered
+            recovered(db,key)
             current.update(worker='',status='paused',error='기존 실행 종료를 확인한 뒤 복구됨')
             db.execute('UPDATE goals SET data=?,version=version+1,updated_at=? WHERE id=?',(json.dumps(current),timestamp(),key))
         return self.goal(key)

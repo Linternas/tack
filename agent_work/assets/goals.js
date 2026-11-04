@@ -10,6 +10,26 @@
   const notify = s => { $('goal-notice').textContent = s; $('goal-notice').hidden = !s; };
   const open = dialog => dialog.showModal ? dialog.showModal() : dialog.setAttribute('open', '');
   const close = dialog => dialog.close ? dialog.close() : dialog.removeAttribute('open');
+  let renderedGoal = '';
+  function resizeComposer() {
+    const input = $('message-body'); input.style.height = 'auto';
+    const minimum = parseFloat(getComputedStyle(input).minHeight) || 36;
+    const height = Math.min(120, Math.max(minimum, input.scrollHeight));
+    input.style.height = `${height}px`; input.style.overflowY = input.scrollHeight > height ? 'auto' : 'hidden';
+  }
+  function closeTeam() {
+    if (!$('team-dialog').open) return;
+    close($('team-dialog')); $('open-team').setAttribute('aria-expanded','false'); $('open-team').focus();
+  }
+  $('open-team').addEventListener('click', () => {
+    if (!room || room.goal.id !== selected) return;
+    open($('team-dialog')); $('open-team').setAttribute('aria-expanded','true');
+  });
+  $('close-team').addEventListener('click', closeTeam);
+  $('team-dialog').addEventListener('cancel', event => { event.preventDefault(); closeTeam(); });
+  $('team-dialog').addEventListener('close', () => $('open-team').setAttribute('aria-expanded','false'));
+  $('message-body').addEventListener('input', resizeComposer);
+  window.addEventListener('resize', resizeComposer);
   function project() { return channels.find(g => g.id === selected)?.project_id || query.get('project') || undefined; }
   function projectName() { return channels.find(g => g.id === selected)?.project_name || $('current-project').textContent; }
   async function api(path, body, projectId = project(), method = 'POST') {
@@ -25,14 +45,15 @@
     channelSignature = signature; const list = $('channels'); list.replaceChildren();
     for (const goal of channels) {
       const button = el('button', undefined, `channel ${goal.id === selected ? 'selected' : ''}`); button.type = 'button'; button.dataset.goal = goal.id;
-      const top = el('span', goal.project_name || '', 'channel-project'); const title = el('strong', goal.title); const meta = el('span', goal.pending_request && !goal.worker ? '요청 전달 중' : goal.planning && goal.status === 'running' ? '계획 생성 중' : labels[goal.status] || goal.status, 'channel-state');
+      const top = el('span', goal.project_name || '', 'channel-project'); const title = el('strong', goal.title); title.title = goal.title; const meta = el('span', goal.pending_request && !goal.worker ? '요청 전달 중' : goal.planning && goal.status === 'running' ? '계획 생성 중' : labels[goal.status] || goal.status, 'channel-state');
       button.append(top, title, meta); button.addEventListener('click', () => selectGoal(goal.id)); list.append(button);
     }
     if (!channels.length) list.append(el('p', '아직 목표가 없습니다. 새 목표를 만들어 팀의 작업을 시작하세요.', 'channel-empty'));
   }
   async function selectGoal(id) {
-    drafts.set(selected, { body: $('message-body').value, kind: $('message-kind').value, target: $('message-target').value, clientDraft });
-    const draft = drafts.get(id); $('message-body').value = draft?.body || ''; $('message-kind').value = draft?.kind || 'note'; clientDraft = draft?.clientDraft;
+    drafts.set(selected, { body: $('message-body').value, kind: $('message-kind').value, target: $('message-target').value, optionsOpen: $('composer-settings').open, clientDraft });
+    const draft = drafts.get(id); $('message-body').value = draft?.body || ''; $('message-kind').value = draft?.kind || 'note'; $('message-target').value = draft?.target || ''; clientDraft = draft?.clientDraft;
+    closeTeam(); $('goal-overview').open = false; $('composer-settings').open = draft?.optionsOpen || false; $('open-team').disabled = true;
     selected = id; room = null; $('run-action').disabled = true; $('send-message').disabled = true; $('message-form').hidden = true; $('room-title').textContent = '목표 불러오는 중…'; feedSignature = ''; delete $('chat-feed').dataset.loaded; const url = new URL(location.href); url.searchParams.set('goal', id); history.replaceState(null, '', url); renderChannels(); await loadRoom(); if (draft) { $('message-target').value = draft.target; updateComposer(); }
   }
   function detailContent(message) {
@@ -52,7 +73,10 @@
     return box;
   }
   function renderRoom() {
-    const goal = room.goal; $('room-project').textContent = projectName(); $('room-title').textContent = goal.title; $('room-subtitle').textContent = goal.acceptance;
+    const goal = room.goal; const changedGoal = renderedGoal !== goal.id; const teamScroll = $('team-content').scrollTop;
+    if (changedGoal) { closeTeam(); $('goal-overview').open = false; renderedGoal = goal.id; }
+    $('open-team').disabled = false; $('room-title').title = goal.title; $('room-request').textContent = goal.title;
+    $('room-project').textContent = projectName(); $('room-title').textContent = goal.title; $('room-subtitle').textContent = goal.acceptance;
     $('room-status').className = `goal-badge ${goal.status}`; $('room-status').textContent = goal.pending_request && !goal.worker ? '요청 전달 중' : goal.pending_request?.kind === 'question' && goal.worker ? '답변 중' : goal.planning && goal.status === 'running' ? '계획 생성 중' : labels[goal.status] || goal.status;
     const reasons = { token_limit: '처리 토큰 한도로 중단했습니다. 설정을 확인한 뒤 재개할 수 있습니다.', time_limit: '시간 한도로 중단했습니다. 설정을 확인한 뒤 재개할 수 있습니다.', round_limit: '자동 수정 횟수 한도에 도달했습니다. 결과를 확인해주세요.', scope_review_required: '승인 범위를 벗어난 요청입니다. 사용자 결정이 필요합니다.', server_overloaded: '모델 서버가 혼잡해 실행을 마치지 못했습니다. 잠시 후 명시적으로 재개해주세요.', interrupted: '실행을 중단했습니다. 실제 결과를 확인한 뒤 재개하세요.' };
     $('room-reason').hidden = !goal.error && goal.status !== 'needs_recheck'; $('room-reason').textContent = goal.status === 'needs_recheck' && goal.worker ? '실행 관리자의 응답이 없습니다. 기존 실행 종료를 확인한 뒤 CLI recover로 복구해주세요.' : reasons[goal.error] || '작업 결과·근거에서 실행 상태를 확인해주세요.';
@@ -62,7 +86,7 @@
     action.textContent = running ? goal.pause_requested ? '중단 요청 중' : '실행 중단' : goal.pending_request ? '대기 요청 실행' : goal.planning ? '계획 생성' : goal.status === 'ready' ? '계획 승인·실행' : goal.status === 'failed' && ['verify','assess'].includes(room.settings.roles[goal.steps[goal.next_step]?.role]?.kind || goal.steps[goal.next_step]?.role) ? '수정 후 재검증' : '작업 재개';
     const signature = JSON.stringify([room.messages, goal.status, room.settings.version]);
     if (signature !== feedSignature) {
-      feedSignature = signature; const feed = $('chat-feed'); const atBottom = feed.scrollHeight - feed.clientHeight - feed.scrollTop < 90;
+      feedSignature = signature; const feed = $('chat-feed'); const atBottom = feed.scrollHeight - feed.clientHeight - feed.scrollTop < 90; const previousScroll = feed.scrollTop;
       const expanded = new Set(Array.from(feed.querySelectorAll('details[open]')).map(d => d.dataset.message)); feed.replaceChildren();
       for (const message of room.messages) {
         const article = el('article', undefined, `chat-message ${message.sender === 'user' ? 'from-user' : ''} ${message.kind === 'decision' || message.kind === 'plan' ? 'decision-message' : ''}`);
@@ -75,7 +99,7 @@
         const details = el('details', undefined, 'message-details'); details.dataset.message = message.id; details.open = expanded.has(message.id); details.append(el('summary', message.kind === 'plan' ? '작업 계획 상세 보기' : '작업 결과·근거 보기'), detailContent(message)); content.append(details); article.append(avatar, content); feed.append(article);
       }
       if (!room.messages.length) feed.append(el('p', '아직 대화가 없습니다. 작업 결과와 전달 요청을 여기에 표시합니다.', 'chat-empty'));
-      if (atBottom || !feed.dataset.loaded) feed.scrollTop = feed.scrollHeight; feed.dataset.loaded = goal.id;
+      feed.scrollTop = atBottom || feed.dataset.loaded !== goal.id ? feed.scrollHeight : previousScroll; feed.dataset.loaded = goal.id;
     }
     const members = $('team-members'); members.replaceChildren();
     for (const role of Object.keys(room.settings.roles)) {
@@ -87,10 +111,11 @@
     const budget = $('budget-state'); budget.replaceChildren(); const limits = goal.execution_settings || room.settings;
     budget.append(el('p', `자동 수정 ${goal.auto_rounds || 0} / ${limits.max_rounds}회`), el('p', `처리 토큰 ${(goal.token_used || 0).toLocaleString()} / ${limits.max_tokens.toLocaleString()}`), el('p', `시간 한도 ${limits.max_minutes}분`), el('small', goal.worker ? '현재 실행의 설정' : goal.execution_settings ? '최근 실행 기준 · 설정 변경은 다음 실행부터' : '다음 실행에 적용'));
     $('connection-status').textContent = `${room.runs.length}개 실행 · ${room.messages.length}개 작업 기록. 채팅 표시를 위한 별도 요약 호출은 없습니다.`;
-    updateComposer();
+    $('team-content').scrollTop = changedGoal ? 0 : teamScroll;
+    updateComposer(); if (changedGoal) resizeComposer();
   }
   async function loadRoom() {
-    if (!selected) { room = null; $('message-form').hidden = true; $('run-action').hidden = true; return; }
+    if (!selected) { closeTeam(); $('open-team').disabled = true; room = null; $('message-form').hidden = true; $('run-action').hidden = true; return; }
     const sequence = ++roomSequence; const id = selected; const projectId = project();
     try { const data = await api(`/api/goals/${id}/chat`, undefined, projectId); if (id !== selected || sequence !== roomSequence) return; room = data; $('message-form').hidden = false; renderRoom(); }
     catch (e) { if (sequence === roomSequence) showError(e.message); }
@@ -116,10 +141,13 @@
     for (const option of select.options) option.disabled = !!allowed && !!option.value && !allowed.includes(room.settings.roles[option.value]?.kind || option.value);
     select.disabled = kind === 'answer';
     const texts = { answer: ['답변 전달·재개 ↑', '사용자 답변을 반영해 기획 또는 대기 중인 작업을 이어갑니다.'], note: ['메모 저장 ↑', '메모는 모델을 호출하지 않습니다.'], question: ['질문 전달 ↑', '선택한 역할이 읽기 전용으로 답변합니다.'], revision: ['수정 요청 실행 ↑', '승인된 범위에서 선택한 역할부터 후속 작업을 다시 수행합니다.'], review: ['검토 요청 실행 ↑', '현재 코드를 검토합니다. Autopilot이면 범위 안의 수정을 이어갈 수 있습니다.'] };
+    const purposes = { note:'메모', answer:'답변 · 작업 이어가기', question:'질문', revision:'수정 요청', review:'검토 요청' };
+    $('composer-summary').textContent = `${purposes[kind]} · ${select.value ? '@' + name(select.value) : '대상 없음'}`;
     $('send-message').textContent = texts[kind][0]; $('composer-hint').textContent = room.goal.worker && kind !== 'note' ? '실행 중입니다. 새 실행 요청은 종료 후 전달할 수 있습니다.' : texts[kind][1];
     $('send-message').disabled = kind !== 'note' && (!room.execution_enabled || !!room.goal.worker || !!room.goal.pending_request || kind === 'answer' && room.goal.status !== 'waiting_answer');
   }
   $('message-kind').addEventListener('change', updateComposer);
+  $('message-target').addEventListener('change', updateComposer);
   $('message-form').addEventListener('submit', async event => {
     event.preventDefault(); if (!room || room.goal.id !== selected) return;
     const body = $('message-body').value; const kind = $('message-kind').value; let target = $('message-target').value || null;
@@ -128,7 +156,7 @@
     const id = selected; const projectId = project(); $('send-message').disabled = true; $('request-state').textContent = '전달 중…';
     try {
       await api(`/api/goals/${id}/messages`, { version: room.goal.version, body, kind, target, client_id: clientDraft.id }, projectId);
-      if (selected === id && $('message-body').value === body) $('message-body').value = ''; clientDraft = null; showError(''); $('request-state').textContent = kind === 'note' ? '메모를 저장했습니다.' : '요청을 전달했습니다. 실제 진행 상태를 확인하세요.'; await refresh();
+      if (selected === id && $('message-body').value === body) { $('message-body').value = ''; resizeComposer(); } clientDraft = null; showError(''); $('request-state').textContent = kind === 'note' ? '메모를 저장했습니다.' : '요청을 전달했습니다. 실제 진행 상태를 확인하세요.'; await refresh();
     } catch (e) { showError(e.message); $('request-state').textContent = '입력은 보존했습니다.'; await loadRoom(); } finally { if (room) updateComposer(); }
   });
   $('run-action').addEventListener('click', async () => {
