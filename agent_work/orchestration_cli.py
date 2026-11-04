@@ -18,6 +18,10 @@ def add_parser(sub):
     crew=sub.add_parser('team',help='직원 업무와 협업 관리').add_subparsers(dest='team_action',required=True)
     crew.add_parser('list')
     crew.add_parser('drain')
+    crew.add_parser('collaboration').add_argument('id')
+    for action in ('delegate','approve-request'):
+        item=crew.add_parser(action);item.add_argument('id');item.add_argument('--json',dest='input',required=True)
+    item=crew.add_parser('revoke-delegation');item.add_argument('id');item.add_argument('--version',type=int,required=True)
     create=crew.add_parser('create');create.add_argument('title');create.add_argument('--acceptance',default='');create.add_argument('--verification-text',default='')
     show=crew.add_parser('show');show.add_argument('id')
     for action in ('run','approve','accept'):
@@ -83,8 +87,18 @@ def dispatch(args,project,store,payload):
         if action=='drain':
             from .run_queue import drain
             return drain(store,project['workspace'])
+        if action in {'collaboration','delegate','approve-request','revoke-delegation'}:
+            from .collaboration import Collaboration
+            collaboration=Collaboration(workforce)
+            if action=='collaboration':return collaboration.snapshot(args.id)
+            data={'version':args.version} if action=='revoke-delegation' else payload(args.input)
+            result=getattr(collaboration,{'delegate':'save_policy','approve-request':'approve_request','revoke-delegation':'revoke'}[action])(args.id,data)
+            if action!='revoke-delegation':result['launch']=collaboration.kick({**project,'_goal_id':args.id})
+            return result
         if action=='list':return {'goals':[g for g in orch.overview()['goals'] if g.get('mode')=='team']}
-        if action=='create':return workforce.create(args.title,args.acceptance,args.verification_text)
+        if action=='create':
+            goal=workforce.create(args.title,args.acceptance,args.verification_text)
+            return {**goal,'launch':start(project,goal['id'],goal['version'])} if goal['execution_policy']['execution_mode']=='autopilot' else goal
         if action=='show':return workforce.snapshot(args.id)
         if action=='run':return start(project,args.id,args.version)
         if action=='approve':return workforce.approve(args.id,args.version)

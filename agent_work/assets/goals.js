@@ -80,7 +80,7 @@
     $('room-status').className = `goal-badge ${goal.status}`; $('room-status').textContent = goal.pending_request && !goal.worker ? '요청 전달 중' : goal.pending_request?.kind === 'question' && goal.worker ? '답변 중' : goal.planning && goal.status === 'running' ? '계획 생성 중' : labels[goal.status] || goal.status;
     const reasons = { token_limit: '처리 토큰 한도로 중단했습니다. 설정을 확인한 뒤 재개할 수 있습니다.', time_limit: '시간 한도로 중단했습니다. 설정을 확인한 뒤 재개할 수 있습니다.', round_limit: '자동 수정 횟수 한도에 도달했습니다. 결과를 확인해주세요.', scope_review_required: '승인 범위를 벗어난 요청입니다. 사용자 결정이 필요합니다.', server_overloaded: '모델 서버가 혼잡해 실행을 마치지 못했습니다. 잠시 후 명시적으로 재개해주세요.', interrupted: '실행을 중단했습니다. 실제 결과를 확인한 뒤 재개하세요.' };
     $('room-reason').hidden = !goal.error && goal.status !== 'needs_recheck'; $('room-reason').textContent = goal.status === 'needs_recheck' && goal.worker ? '실행 관리자의 응답이 없습니다. 기존 실행 종료를 확인한 뒤 CLI recover로 복구해주세요.' : reasons[goal.error] || '작업 결과·근거에서 실행 상태를 확인해주세요.';
-    const policy = goal.worker ? goal.execution_settings : room.settings; $('room-mode').textContent = `${goal.pending_request?.kind === 'question' && goal.worker ? '읽기 전용 질문' : policy?.autopilot ? 'Autopilot' : '수동'}${goal.worker ? ' · 실행 중' : ' · 다음 실행'}`;
+    const policy = goal.worker ? goal.execution_settings : room.settings; $('room-mode').textContent = `${goal.pending_request?.kind === 'question' && goal.worker ? '읽기 전용 질문' : policy?.autopilot ? '승인 후 수정 자동' : '수동'}${goal.worker ? ' · 실행 중' : ' · 다음 실행'}`;
     const action = $('run-action'); const running = ['running', 'verifying'].includes(goal.status);
     action.hidden = !running && (!!goal.worker || !['ready', 'paused', 'failed'].includes(goal.status)); action.disabled = !room.execution_enabled || !!goal.pause_requested;
     action.textContent = running ? goal.pause_requested ? '중단 요청 중' : '실행 중단' : goal.pending_request ? '대기 요청 실행' : goal.planning ? '계획 생성' : goal.status === 'ready' ? '계획 승인·실행' : goal.status === 'failed' && ['verify','assess'].includes(room.settings.roles[goal.steps[goal.next_step]?.role]?.kind || goal.steps[goal.next_step]?.role) ? '수정 후 재검증' : '작업 재개';
@@ -190,7 +190,7 @@
   }
   const stable = value => JSON.stringify(value, (_,v) => v && typeof v === 'object' && !Array.isArray(v) ? Object.fromEntries(Object.entries(v).sort(([a],[b])=>a.localeCompare(b))) : v);
   function settingsBody() {
-    const form = $('settings-form'); const body = {version:settingsDraft.version,autopilot:form.elements.autopilot.checked,roles:{}};
+    const form = $('settings-form'); const body = {...settingsDraft,autopilot:form.elements.autopilot.checked,execution_mode:form.elements.autopilot.checked===settingsDraft.autopilot?settingsDraft.execution_mode:(form.elements.autopilot.checked?'approved':'manual'),roles:{}};
     for (const key of ['max_rounds','max_minutes','max_tokens']) body[key] = Number(form.elements[key].value);
     for (const block of $('role-fields').children) {
       const key = block.dataset.role; const id = form.elements[`${key}_id`].value;

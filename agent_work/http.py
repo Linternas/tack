@@ -83,10 +83,16 @@ class Handler(BaseHTTPRequestHandler):
                         if set(payload)!={'title','acceptance','verification_text'}:raise BoardError('목표 필드를 확인해주세요.')
                         goal=workforce.create(**payload)
                         return self.respond({**goal,'launch':start(project,goal['id'],goal['version'])},201)
-                    match=re.fullmatch(r'/api/workforce/(GOAL-[A-Z0-9]+)/(approve|accept|run|pause|assign|message)',path)
+                    match=re.fullmatch(r'/api/workforce/(GOAL-[A-Z0-9]+)/(approve|accept|run|pause|assign|message|delegate|revoke-delegation|approve-request)',path)
                     job_match=re.fullmatch(r'/api/workforce/(GOAL-[A-Z0-9]+)/(LOCAL-[0-9]+)/(reply|retry)',path)
                     if match:
                         key,action=match.groups()
+                        if action in {'delegate','revoke-delegation','approve-request'}:
+                            from .collaboration import Collaboration
+                            collaboration=Collaboration(workforce)
+                            result=getattr(collaboration,{'delegate':'save_policy','revoke-delegation':'revoke','approve-request':'approve_request'}[action])(key,payload)
+                            if action!='revoke-delegation':result['launch']=collaboration.kick({**project,'_goal_id':key})
+                            return self.respond(result)
                         if action in {'approve','accept','run','pause'}:
                             if set(payload)!={'version'} or type(payload['version']) is not int:raise BoardError('최신 목표 버전이 필요합니다.')
                             workforce.goal(key)

@@ -113,7 +113,7 @@ def run(args):
     if args.command=='migrate':
         from .migration import migrate
         return emit(migrate(project,args.board,args.notes,args.active_note))
-    readonly=(args.command=='settings' and args.settings_action in {'show','catalog'}) or args.command in {'status','resume','sessions','doctor','usage'} or (args.command=='goal' and args.goal_action in {'list','show','messages'}) or (args.command=='team' and args.team_action in {'list','show'}) or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action=='show')
+    readonly=(args.command=='settings' and args.settings_action in {'show','catalog'}) or args.command in {'status','resume','sessions','doctor','usage'} or (args.command=='goal' and args.goal_action in {'list','show','messages'}) or (args.command=='team' and args.team_action in {'list','show','collaboration'}) or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action=='show')
     from .project_lifecycle import read
     if not readonly and args.command!='dashboard' and read(project['db_path'])['status']=='archived':raise BoardError('보관 프로젝트는 읽기 전용입니다. project restore로 복원해주세요.',409)
     store=Store(project['db_path'],readonly=readonly)

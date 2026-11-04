@@ -13,7 +13,7 @@ def source_document(store, project, key):
     target=(workspace/key).resolve()
     allowed=[(workspace/root).resolve() for root in project['source_roots']]
     if (not target.is_relative_to(workspace) or not any(root.is_relative_to(workspace) and target.is_relative_to(root) for root in allowed)
-        or (target.suffix not in {'.md','.ts','.tsx','.json','.py','.txt','.html'} and not any(target==root and root.is_file() for root in allowed)) or not target.is_file() or target.stat().st_size>1024*1024):
+        or (target.suffix not in {'.md','.yaml','.yml','.ts','.tsx','.json','.py','.txt','.html'} and not any(target==root and root.is_file() for root in allowed)) or not target.is_file() or target.stat().st_size>1024*1024):
         try:
             return store.document(str(target))
         except BoardError:
@@ -49,7 +49,7 @@ def render_document(store,project,document):
     related='<h2>참조 문서</h2><ul>'+''.join(f'<li><a href="{escape(url,quote=True)}">{escape(label)}</a></li>' for label,url in links)+'</ul>' if links else ''
     command=f'<p>CLI: <code>tack document show {escape(document["id"])}</code></p>' if document['id'] else ''
     return ('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-        f'<title>{escape(document["title"])}</title><link rel="stylesheet" href="/dashboard.css"></head><body><main class="session-layout">'
+        f'<title>{escape(document["title"])}</title><link rel="stylesheet" href="/dashboard.css"><script src="/common.js" defer></script></head><body><main class="session-layout">'
         f'<nav><a href="/?project={project_id}">작업 보드</a><a href="/documents?project={project_id}">보관 문서</a></nav>'
         f'<h1>{escape(document["title"])}</h1><p>원래 경로: {escape(document["source"])}</p>{command}'
         f'<p>원문 기록입니다. 과거 진행·검증 표시는 현재 상태를 의미하지 않습니다.</p>{related}<pre>{escape(document["text"])}</pre></main></body></html>').encode()
@@ -59,7 +59,7 @@ def render_index(store,project):
     escape=html.escape
     rows=''.join(f'<li><a href="/documents/{d["id"]}?project={quote(project["id"])}">{escape(d["title"])}</a> · {escape(d["kind"])}<p>{escape(d["source"])}</p></li>' for d in store.documents())
     return ('<!doctype html><html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-        '<title>보관 문서</title><link rel="stylesheet" href="/dashboard.css"></head><body><main class="session-layout">'
+        '<title>보관 문서</title><link rel="stylesheet" href="/dashboard.css"><script src="/common.js" defer></script></head><body><main class="session-layout">'
         f'<a href="/?project={quote(project["id"])}">작업 보드</a><h1>보관 문서</h1><p>이관한 원문과 과거 기록. 현재 작업 상태는 작업 보드에서 확인하세요.</p><ul>{rows}</ul></main></body></html>').encode()
 
 

@@ -96,31 +96,31 @@
     const countCategory = (category) => open.filter((task) => task.category === category).length;
     const done = state.tasks.filter((task) => task.status === 'done').length;
     const items = [
-      ['all', '전체 작업', '▦', open.length],
-      ['issue', '문제', '◈', countCategory('issue')],
-      ['decision', '기획 결정', '◇', countCategory('decision')],
-      ['api', 'API 확인·요청', '⇄', countCategory('api')],
-      ['qa', 'QA 체크리스트', '☑', countCategory('qa')],
-      ['done', '완료 기록', '✓', done],
-      ['archived', '보관함', '▤', state.tasks.filter((task) => task.status === 'archived').length],
+      ['all', '전체 작업', 'grid', open.length],
+      ['issue', '문제', 'issue', countCategory('issue')],
+      ['decision', '기획 결정', 'decision', countCategory('decision')],
+      ['api', 'API 확인·요청', 'api', countCategory('api')],
+      ['qa', 'QA 체크리스트', 'qa', countCategory('qa')],
+      ['done', '완료 기록', 'done', done],
+      ['archived', '보관함', 'archived', state.tasks.filter((task) => task.status === 'archived').length],
     ];
     $('navigation').innerHTML = items
       .map(
         ([mode, label, icon, count], index) =>
-          `${index === 5 ? '<div class="nav-divider"></div>' : ''}<button class="nav-item ${state.mode === mode ? 'active' : ''}" data-mode="${mode}" ${state.mode === mode ? 'aria-current="page"' : ''}><span class="nav-icon" aria-hidden="true">${icon}</span><span>${label}</span><span class="nav-count">${count}</span></button>`
+          `${index === 5 ? '<div class="nav-divider"></div>' : ''}<button class="nav-item ${state.mode === mode ? 'active' : ''}" data-mode="${mode}" ${state.mode === mode ? 'aria-current="page"' : ''}><span class="nav-icon" aria-hidden="true">${window.tackIcon?.(icon)||''}</span><span>${label}</span><span class="nav-count">${count}</span></button>`
       )
       .join('');
     const metrics = [
-      ['issue', '확인할 문제', '◈', countCategory('issue'), '현재 문제와 재현 확인'],
-      ['decision', '기획 결정', '◇', countCategory('decision'), '범위·동작·권한 합의'],
-      ['api', 'API 확인·요청', '⇄', countCategory('api'), '서버 계약·응답 확인'],
-      ['qa', '남은 QA', '☑', countCategory('qa'), '절차와 기대 결과 확인'],
-      ['done', '완료 기록', '✓', done, '처리 근거와 결정 보관'],
+      ['issue', '확인할 문제', 'issue', countCategory('issue'), '현재 문제와 재현 확인'],
+      ['decision', '기획 결정', 'decision', countCategory('decision'), '범위·동작·권한 합의'],
+      ['api', 'API 확인·요청', 'api', countCategory('api'), '서버 계약·응답 확인'],
+      ['qa', '남은 QA', 'qa', countCategory('qa'), '절차와 기대 결과 확인'],
+      ['done', '완료 기록', 'done', done, '처리 근거와 결정 보관'],
     ];
     $('metrics').innerHTML = metrics
       .map(
         ([mode, label, icon, count, hint]) =>
-          `<button class="metric ${mode}" data-mode="${mode}"><span class="metric-top">${label}<span class="metric-icon" aria-hidden="true">${icon}</span></span><strong class="metric-number">${count}</strong><span class="metric-note">${hint}</span></button>`
+          `<button class="metric ${mode}" data-mode="${mode}"><span class="metric-top">${label}<span class="metric-icon" aria-hidden="true">${window.tackIcon?.(icon)||''}</span></span><strong class="metric-number">${count}</strong><span class="metric-note">${hint}</span></button>`
       )
       .join('');
     const ready = open.filter(actionable).length;

@@ -11,7 +11,7 @@ import sys
 import tempfile
 from .store import BoardError
 
-EXTENSION_MODULES={'harness.py','harness_cli.py','orchestration.py','orchestration_cli.py','team.py','crewset.py','usage_adapter.py','workforce.py','workspaces.py','scheduler.py','run_queue.py'}
+EXTENSION_MODULES={'harness.py','harness_cli.py','orchestration.py','orchestration_cli.py','team.py','crewset.py','usage_adapter.py','workforce.py','workspaces.py','scheduler.py','run_queue.py','collaboration.py','execution_policy.py'}
 EXTENSION_ASSETS={'goals.html','goals.js','goals.css','plan.schema.json','verdict.schema.json','brief.schema.json','crewset.roles.json','crewset.LICENSE','employee.schema.json','workforce.html','workforce.js','workforce.css'}
 LEGACY_SKILL_SHA256='db2ba8d5a8b5b196bd3e126528f6d14a0a18855a01343b1c25c1cce8bb69663f'
 

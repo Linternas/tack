@@ -8,9 +8,11 @@ import time
 from .store import BoardError, timestamp
 from .orchestration import identifier, text
 
+from .execution_policy import MODES,DEFAULT_PERMISSIONS,mode,permissions
+
 ROLES=('plan','implement','verify')
 KINDS={'plan','implement','verify','assess'}
-DEFAULTS={'max_parallel':3,'autopilot':False,'max_rounds':2,'max_minutes':30,'max_tokens':500000,
+DEFAULTS={'execution_mode':'manual','permissions':DEFAULT_PERMISSIONS,'max_parallel':3,'autopilot':False,'max_rounds':2,'max_minutes':30,'max_tokens':500000,
           'roles':{'plan':{'name':'기획','model':'','instructions':''},'implement':{'name':'구현','model':'','instructions':'승인된 파일과 완료 조건 안에서 구현한다. 실제 변경과 수행한 검증, 미실행 검증을 구분해 전달한다.'},'verify':{'name':'검토','model':'','instructions':'완료 조건과 실제 코드·검증 근거를 대조한다. 결함은 영향과 재현·수정 조건으로 보고하고, 수행하지 않은 검증을 통과로 표시하지 않는다.'}}}
 
 class Team:
@@ -34,12 +36,19 @@ class Team:
         if self.exists():
             with self.store.connect() as db:row=db.execute('SELECT * FROM team_settings WHERE id=1').fetchone()
             if row:
-                data={**copy.deepcopy(DEFAULTS),**json.loads(row['data'])};data['roles']=self.roles(data['roles']);return {**data,'version':row['version']}
+                stored=json.loads(row['data']);data={**copy.deepcopy(DEFAULTS),**stored};data['execution_mode']=mode(stored);data['autopilot']=data['execution_mode']!='manual';data['roles']=self.roles(data['roles']);return {**data,'version':row['version']}
         return {**copy.deepcopy(DEFAULTS),'roles':self.roles(copy.deepcopy(DEFAULTS['roles'])),'version':0}
     def save(self,payload,connection=None):
         if isinstance(payload,dict) and 'max_parallel' not in payload:payload={**payload,'max_parallel':self.settings()['max_parallel']}
+        if isinstance(payload,dict):
+            current=self.settings()
+            selected=payload.get('execution_mode', 'approved' if payload.get('autopilot') else 'manual')
+            if selected==current['execution_mode'] and type(payload.get('autopilot')) is bool and payload['autopilot']!=current['autopilot']:selected='approved' if payload['autopilot'] else 'manual'
+            payload={**payload,'execution_mode':selected,'permissions':payload.get('permissions',current['permissions'])}
         if not isinstance(payload,dict) or set(payload)!=set(DEFAULTS)|{'version'}:raise BoardError('팀 설정 필드를 확인해주세요.')
         if type(payload['version']) is not int or type(payload['autopilot']) is not bool:raise BoardError('버전과 실행 모드를 확인해주세요.')
+        if not isinstance(payload['execution_mode'],str) or payload['execution_mode'] not in MODES:raise BoardError('실행 모드는 manual, approved, autopilot 중 하나여야 합니다.')
+        payload={**payload,'autopilot':payload['execution_mode']!='manual','permissions':permissions(payload['permissions'])}
         for name,low,high in [('max_parallel',1,8),('max_rounds',0,20),('max_minutes',1,120),('max_tokens',1000,2000000)]:
             if type(payload[name]) is not int or not low<=payload[name]<=high:raise BoardError(f'{name}: {low}~{high} 범위가 필요합니다.')
         roles=payload['roles']
