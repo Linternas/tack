@@ -1,4 +1,5 @@
 """Immutable runtimes and installation inventory, without initial configuration."""
+import ast
 import fcntl
 import hashlib
 import json
@@ -10,8 +11,8 @@ import sys
 import tempfile
 from .store import BoardError
 
-EXTENSION_MODULES={'harness.py','harness_cli.py','orchestration.py','orchestration_cli.py','team.py','crewset.py'}
-EXTENSION_ASSETS={'goals.html','goals.js','goals.css','plan.schema.json','verdict.schema.json','brief.schema.json','crewset.roles.json','crewset.LICENSE'}
+EXTENSION_MODULES={'harness.py','harness_cli.py','orchestration.py','orchestration_cli.py','team.py','crewset.py','usage_adapter.py','workforce.py','workspaces.py','scheduler.py','run_queue.py'}
+EXTENSION_ASSETS={'goals.html','goals.js','goals.css','plan.schema.json','verdict.schema.json','brief.schema.json','crewset.roles.json','crewset.LICENSE','employee.schema.json','workforce.html','workforce.js','workforce.css'}
 LEGACY_SKILL_SHA256='db2ba8d5a8b5b196bd3e126528f6d14a0a18855a01343b1c25c1cce8bb69663f'
 
 def package_version(source):
@@ -21,7 +22,16 @@ def package_version(source):
 
 def runtime(source,releases,core=False):
     source=Path(source).resolve();releases=Path(releases)
-    files=sorted(p for p in (source/'agent_work').rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc' and (not core or p.name not in EXTENSION_MODULES|EXTENSION_ASSETS))
+    excluded=set()
+    if core:
+        tree=ast.parse((source/'agent_work/installation.py').read_text())
+        for node in tree.body:
+            if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in {'EXTENSION_MODULES','EXTENSION_ASSETS'} for target in node.targets):
+                values=ast.literal_eval(node.value)
+                if not isinstance(values,set) or any(not isinstance(v,str) or Path(v).name!=v for v in values):raise BoardError('배포본의 하네스 파일 목록을 확인해주세요.')
+                excluded.update(values)
+        if not {'orchestration.py','harness.py'}<=excluded:raise BoardError('배포본의 Core/하네스 분리 목록이 없습니다.')
+    files=sorted(p for p in (source/'agent_work').rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc' and (not core or p.name not in excluded))
     if not files or not (source/'agent_work/cli.py').is_file():raise BoardError('유효한 Tack 배포본이 아닙니다.')
     digest=hashlib.sha256()
     for p in files:

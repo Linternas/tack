@@ -40,6 +40,7 @@ def backups(project):
     return sorted(paths)
 
 def idle(db):
+    if db.execute("SELECT 1 FROM sqlite_master WHERE name='team_run_queue'").fetchone() and db.execute("SELECT 1 FROM team_run_queue WHERE status IN ('queued','running')").fetchone():raise BoardError('실행 큐에 대기·진행 중인 요청이 있습니다. 취소 또는 실행 종료 후 다시 시도해주세요.',409)
     for table in ('sessions','goals','executions'):
         if not db.execute('SELECT 1 FROM sqlite_master WHERE name=?',(table,)).fetchone():continue
         for row in db.execute('SELECT data FROM '+table):

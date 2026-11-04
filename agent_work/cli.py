@@ -6,11 +6,31 @@ import sqlite3
 import sys
 from pathlib import Path
 from .projects import by_id, git_value, projects, resolve
-from .store import BoardError, Store
+from .store import BoardError, Store, CATEGORIES, STATUSES, TEXT_FIELDS
 
 
 def emit(value):
     print(json.dumps(value,ensure_ascii=False,indent=2))
+
+
+def fields(value, keys):
+    return {key: value[key] for key in keys}
+
+
+def write_result(result, full, key='task'):
+    if full:
+        return result
+    keys = ('id', 'version', 'status', 'updated_at')
+    if key == 'session':
+        keys += ('task_id',)
+    return {key: fields(result[key], keys)}
+
+
+def choices(value, allowed):
+    selected = set(value.split(','))
+    if not selected <= allowed:
+        raise argparse.ArgumentTypeError('허용 값: ' + ', '.join(sorted(allowed)))
+    return selected
 
 
 def payload(path):
@@ -37,6 +57,10 @@ def parser():
         if action=='delete':
             item.add_argument('--confirm',required=True,help='삭제할 프로젝트 이름');item.add_argument('--include-backups',action='store_true')
     status=sub.add_parser('status'); status.add_argument('--all',action='store_true')
+    status.add_argument('--full',action='store_true',help='기존 상세 목록 출력')
+    status.add_argument('--status',type=lambda value: choices(value, STATUSES),help='쉼표로 구분한 상태')
+    status.add_argument('--category',type=lambda value: choices(value, CATEGORIES),help='쉼표로 구분한 분류')
+    status.add_argument('--search',help='ID·제목·작업 내용에서 대소문자 구분 없이 검색')
     task=sub.add_parser('task').add_subparsers(dest='action',required=True)
     add=task.add_parser('add'); add.add_argument('title'); add.add_argument('--category',default='task'); add.add_argument('--json',dest='input')
     show=task.add_parser('show'); show.add_argument('id')
@@ -44,6 +68,8 @@ def parser():
     start=task.add_parser('start'); start.add_argument('id'); start.add_argument('--version',required=True,type=int)
     check=sub.add_parser('checkpoint'); check.add_argument('task_id'); check.add_argument('--session'); check.add_argument('--json',dest='input',required=True)
     resume=sub.add_parser('resume'); resume.add_argument('task_id'); resume.add_argument('--session')
+    for command in (add, update, start, check, resume):
+        command.add_argument('--full',action='store_true',help='요약 대신 전체 결과 출력')
     sessions=sub.add_parser('sessions'); sessions.add_argument('--all',action='store_true')
     document=sub.add_parser('document').add_subparsers(dest='document_action',required=True)
     document.add_parser('list')
@@ -57,6 +83,7 @@ def parser():
     hook=sub.add_parser('hook');hook.add_argument('--json',dest='input',default='-')
     bind=sub.add_parser('bind');bind.add_argument('thread');bind.add_argument('task_id');bind.add_argument('--from-task',dest='expected_task')
     sub.add_parser('doctor')
+    usage=sub.add_parser('usage',help='수집된 실행 사용량 조회');usage.add_argument('--goal');usage.add_argument('--role');usage.add_argument('--full',action='store_true',help='최근 100개 실행 내역 포함')
     if os.environ.get('TACK_HARNESS')=='1' and Path(__file__).with_name('harness.py').is_file():
         from .orchestration_cli import add_parser
         add_parser(sub)
@@ -81,12 +108,12 @@ def run(args):
         data={'version':args.version}
         if args.project_action=='delete':data.update(confirmation=args.confirm,include_backups=args.include_backups)
         return emit(change(project,args.project_action,data))
-    project=by_id(args.project) if args.project else resolve(args.workspace,create=args.command in {'init','migrate'} or (args.command=='task' and args.action=='add') or (args.command=='goal' and args.goal_action in {'add','draft'}),
+    project=by_id(args.project) if args.project else resolve(args.workspace,create=args.command in {'init','migrate'} or (args.command=='task' and args.action=='add') or (args.command=='goal' and args.goal_action in {'add','draft'}) or (args.command=='team' and args.team_action=='create'),
         local=getattr(args,'local',False),name=getattr(args,'name',None),link=getattr(args,'link',None),source_roots=getattr(args,'source_root',None))
     if args.command=='migrate':
         from .migration import migrate
         return emit(migrate(project,args.board,args.notes,args.active_note))
-    readonly=(args.command=='settings' and args.settings_action in {'show','catalog'}) or args.command in {'status','resume','sessions','doctor'} or (args.command=='goal' and args.goal_action in {'list','show','messages'}) or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action=='show')
+    readonly=(args.command=='settings' and args.settings_action in {'show','catalog'}) or args.command in {'status','resume','sessions','doctor','usage'} or (args.command=='goal' and args.goal_action in {'list','show','messages'}) or (args.command=='team' and args.team_action in {'list','show'}) or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action=='show')
     from .project_lifecycle import read
     if not readonly and args.command!='dashboard' and read(project['db_path'])['status']=='archived':raise BoardError('보관 프로젝트는 읽기 전용입니다. project restore로 복원해주세요.',409)
     store=Store(project['db_path'],readonly=readonly)
@@ -96,7 +123,7 @@ def run(args):
         if args.command=='bind':
             tracker.bind(args.thread,args.task_id,args.expected_task);return emit({'thread_id':args.thread,'task_id':args.task_id})
         return emit({'workspace':project['workspace'],'data_path':str(store.path),'received_hook_events':len(tracker.overview()['observations']),'orchestration':False})
-    if args.command in {'goal','settings'}:
+    if args.command in {'goal','settings','team'}:
         from .harness import require_enabled
         require_enabled(project['workspace'])
         from .orchestration_cli import dispatch
@@ -107,19 +134,42 @@ def run(args):
         if args.document_action=='import': return emit(store.archive_document(args.path,args.kind))
         from .documents import source_document
         return emit(source_document(store,project,args.key if not args.key.startswith('DOC-') else 'archive:'+args.key))
+    if args.command=='usage':
+        from .usage import Usage
+        result=Usage(store).overview(args.goal,args.role)
+        if not args.full:result.pop('runs')
+        return emit(result)
     if args.command=='status':
         tasks=store.all()
-        if not args.all: tasks=[t for t in tasks if t['status'] not in {'done','archived'}]
-        return emit({'project':project,'tasks':[{k:t[k] for k in ('id','title','category','status','version','next_action','blocked_by')} for t in tasks],
-                     'sessions':[{k:r[k] for k in ('id','task_id','status','branch','next_action','updated_at')} for r in store.sessions(args.all)]})
+        if args.status:
+            tasks=[t for t in tasks if t['status'] in args.status]
+        elif not args.all:
+            tasks=[t for t in tasks if t['status'] not in {'done','archived'}]
+        if args.category:
+            tasks=[t for t in tasks if t['category'] in args.category]
+        if args.search:
+            term=args.search.casefold()
+            tasks=[t for t in tasks if any(term in t[key].casefold() for key in TEXT_FIELDS | {'id'})]
+        sessions=store.sessions(args.all)
+        if args.status or args.category or args.search:
+            ids={t['id'] for t in tasks}
+            sessions=[r for r in sessions if r['task_id'] in ids]
+        task_keys=('id','title','category','status','version','blocked_by')
+        session_keys=('id','task_id','status','branch','version','updated_at')
+        if args.full:
+            return emit({'project':project,'tasks':[fields(t,task_keys+('next_action',)) for t in tasks],
+                         'sessions':[fields(r,('id','task_id','status','branch','next_action','updated_at')) for r in sessions]})
+        counts={status:sum(t['status']==status for t in tasks) for status in sorted({t['status'] for t in tasks})}
+        return emit({'project':fields(project,('id','name','version')),'counts':counts,
+                     'tasks':[fields(t,task_keys) for t in tasks],'sessions':[fields(r,session_keys) for r in sessions]})
     if args.command=='task':
         if args.action=='show': return emit(store.detail(args.id))
-        if args.action=='add': return emit(store.write({'title':args.title,'category':args.category,**(payload(args.input) if args.input else {})}))
-        if args.action=='update': return emit(store.write(payload(args.input),args.id))
+        if args.action=='add': return emit(write_result(store.write({'title':args.title,'category':args.category,**(payload(args.input) if args.input else {})}),args.full))
+        if args.action=='update': return emit(write_result(store.write(payload(args.input),args.id),args.full))
         task=store.detail(args.id)['task']
         if task['status'] in {'done','archived'}: raise BoardError('완료·보관된 작업은 명시적으로 상태를 수정한 뒤 시작하세요.')
         if any(store.detail(key)['task']['status']!='done' for key in task['blocked_by']): raise BoardError('미완료 선행 작업이 있습니다.')
-        return emit(store.write({'version':args.version,'status':'in_progress','note':'작업 시작'},args.id))
+        return emit(write_result(store.write({'version':args.version,'status':'in_progress','note':'작업 시작'},args.id),args.full))
     if args.command=='checkpoint':
         data=payload(args.input)
         data.setdefault('workspace',project['workspace'])
@@ -127,8 +177,12 @@ def run(args):
         data.setdefault('thread_id',os.environ.get('CODEX_THREAD_ID',''))
         data.setdefault('agent','codex' if os.environ.get('CODEX_THREAD_ID') else 'cli')
         data['task_id']=args.task_id
-        return emit(store.checkpoint(data,args.session))
-    if args.command=='resume': return emit(store.resume(args.task_id,args.session))
+        return emit(write_result(store.checkpoint(data,args.session),args.full,'session'))
+    if args.command=='resume':
+        result=store.resume(args.task_id,args.session)
+        if not args.full:
+            result['dependencies']=[fields(t,('id','title','status','version','resolution','next_action','blocked_by')) for t in result['dependencies']]
+        return emit(result)
     if args.command=='sessions': return emit({'sessions':store.sessions(args.all)})
     if args.command=='backup': return emit({'backup':str(store.backup())})
     if args.command=='dashboard':

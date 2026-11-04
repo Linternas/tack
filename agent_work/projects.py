@@ -24,6 +24,13 @@ def identity(workspace):
         raise BoardError('프로젝트 폴더가 존재하지 않습니다.')
     git_root=git_value(workspace,'rev-parse','--show-toplevel')
     root=Path(git_root).resolve() if git_root else next((folder for folder in (workspace,*workspace.parents) if (folder/'.agent-work/project.json').is_file()),workspace)
+    if not git_root:
+        for parent in workspace.parents:
+            marker=parent/'.tack-orchestration/install.json'
+            if not workspace.is_relative_to(parent/'.tack-orchestration/workspaces') or not marker.is_file():continue
+            try:installed=json.loads(marker.read_text())
+            except (OSError,ValueError):continue
+            if installed.get('format')==1 and installed.get('workspace')==str(parent):root=parent;break
     common = git_value(root,'rev-parse','--path-format=absolute','--git-common-dir')
     return root, str(Path(common).resolve()) if common else str(root)
 

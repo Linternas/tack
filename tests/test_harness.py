@@ -21,7 +21,7 @@ class HarnessTests(unittest.TestCase):
     def tearDown(self):self.env.stop();self.temp.cleanup()
     def test_core_install_excludes_orchestration_and_preserves_passive_hooks(self):
         home=self.root/'home';result=setup(SOURCE,home,{'SHELL':'/bin/zsh'});runtime=Path(result['runtime'])
-        self.assertFalse((runtime/'agent_work/crewset.py').exists());self.assertFalse((runtime/'agent_work/assets/crewset.roles.json').exists());self.assertFalse((runtime/'agent_work/orchestration.py').exists());self.assertFalse((runtime/'agent_work/assets/goals.html').exists());self.assertTrue((runtime/'agent_work/tracking.py').is_file())
+        self.assertFalse((runtime/'agent_work/workforce.py').exists());self.assertFalse((runtime/'agent_work/assets/workforce.html').exists());self.assertFalse((runtime/'agent_work/assets/employee.schema.json').exists());self.assertFalse((runtime/'agent_work/crewset.py').exists());self.assertFalse((runtime/'agent_work/assets/crewset.roles.json').exists());self.assertFalse((runtime/'agent_work/orchestration.py').exists());self.assertFalse((runtime/'agent_work/assets/goals.html').exists());self.assertTrue((runtime/'agent_work/tracking.py').is_file())
         self.assertFalse((home/'.codex/skills/tack-orchestration/SKILL.md').exists());self.assertNotIn('`tack-orchestration` for', (home/'.codex/AGENTS.md').read_text())
         env={**os.environ,'TACK_HARNESS':'1'}
         run=lambda *args:subprocess.run([result['launcher'],'--workspace',str(self.workspace),*args],capture_output=True,text=True,env=env)

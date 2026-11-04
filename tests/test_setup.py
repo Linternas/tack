@@ -36,8 +36,8 @@ class SetupTests(unittest.TestCase):
         task = run('task', 'add', 'installed cli test')['task']
         self.assertEqual(run('task', 'show', task['id'])['task']['title'], 'installed cli test')
         self.assertEqual(Path(result['launcher']).name, 'tack')
-        self.assertEqual(run('status')['project']['db_path'], json.loads(subprocess.run(
-            [result['legacy_launcher'], 'status'], cwd=project, env=env,
+        self.assertEqual(run('status','--full')['project']['db_path'], json.loads(subprocess.run(
+            [result['legacy_launcher'], 'status', '--full'], cwd=project, env=env,
             capture_output=True, text=True, check=True).stdout)['project']['db_path'])
 
     def test_all_account_homes_and_existing_data_preserved(self):

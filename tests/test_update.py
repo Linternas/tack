@@ -55,7 +55,7 @@ class UpdateTests(unittest.TestCase):
         skill=self.workspace/'.agents/skills/tack-orchestration/SKILL.md'
         from agent_work.installation import LEGACY_SKILL_SHA256
         # The known historical stock template is the prefix before goal-specific guidance.
-        skill.write_bytes(skill.read_bytes().split(b'\nGoal-specific role guidance')[0]);self.assertEqual(__import__('hashlib').sha256(skill.read_bytes()).hexdigest(),LEGACY_SKILL_SHA256)
+        skill.write_bytes((SOURCE/'tests/fixtures/legacy-orchestration-skill.md').read_bytes());self.assertEqual(__import__('hashlib').sha256(skill.read_bytes()).hexdigest(),LEGACY_SKILL_SHA256)
         template=self.source/'templates/tack-orchestration.md';template.write_text(template.read_text()+'\nNew release instructions\n')
         self.run_update();self.assertEqual(skill.read_bytes(),template.read_bytes())
     def test_busy_project_is_skipped_then_updated_by_same_command_after_stop(self):
@@ -148,5 +148,17 @@ class UpdateTests(unittest.TestCase):
         response=io.BytesIO(archive.getvalue());folder=self.root/'download';folder.mkdir()
         with patch('agent_work.update._json',side_effect=[urllib.error.HTTPError('url',404,'not found',{},None),{'sha':'a'*40}]) as api,patch('urllib.request.urlopen',return_value=response),self.assertRaises(BoardError):_download(folder)
         self.assertTrue(api.call_args_list[-1].args[0].endswith('/commits/main'));self.assertFalse((self.root/'outside').exists())
+
+    def test_runtime_filters_new_extension_files_using_release_not_installed_constants(self):
+        from agent_work.installation import runtime
+        (self.source/'agent_work/future_employee.py').write_text('raise AssertionError("extension must not load in Core")')
+        marker=self.source/'agent_work/installation.py'
+        raw=marker.read_text().replace("EXTENSION_MODULES={", "EXTENSION_MODULES={'future_employee.py',",1)
+        marker.write_text(raw)
+        with patch('agent_work.installation.EXTENSION_MODULES',set()),patch('agent_work.installation.EXTENSION_ASSETS',set()):
+            core=runtime(self.source,self.root/'future-core',core=True)
+        self.assertFalse((core/'agent_work/future_employee.py').exists())
+        self.assertFalse((core/'agent_work/workforce.py').exists())
+        self.assertTrue((core/'agent_work/usage.py').exists())
 
 if __name__=='__main__':unittest.main()

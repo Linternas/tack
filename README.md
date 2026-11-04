@@ -1,21 +1,242 @@
+<div align="center">
+
 # Tack
 
-Tack은 **PC별 로컬 작업·세션 관리자**다. 개발 목표에 따라 역할 에이전트를 실행하는 **Tack Orchestration**은 필요한 프로젝트에만 추가 설치한다. 두 도구는 같은 프로젝트의 SQLite DB를 사용하며, CLI만으로도 사용할 수 있다. Dashboard는 선택 사항이다.
+### 에이전트와 하는 개발을, 이어지는 작업으로.
 
-| 구분 | 전역 Tack | 프로젝트별 Tack Orchestration |
+**작업과 세션을 기록하고, 필요한 프로젝트에서는 역할을 가진 에이전트 팀과 함께 개발합니다.**
+
+Local-first · CLI & Dashboard · SQLite · Optional orchestration
+
+[왜 Tack인가](#왜-tack인가) · [빠른 시작](#빠른-시작) · [에이전트 팀 실행](#에이전트-팀과-개발하기) · [개입 방식](#개발-흐름에-어떻게-개입하나) · [상세 안내](#명령과-운영-레퍼런스)
+
+</div>
+
+---
+
+Tack은 **개발 작업의 상태와 근거를 세션 밖에 남기는 로컬 도구**입니다. 무엇을 하던 중이었는지, 어떤 결정을 기다리는지, 실제 검증이 끝났는지를 CLI와 대시보드에서 같은 기록으로 확인합니다.
+
+프로젝트에 **Tack Orchestration**을 추가하면 기획·개발·검토 같은 역할을 가진 에이전트에게 업무를 맡길 수 있습니다. 직원들은 각자의 업무를 수행하고, 동료에게 질문하고, 검토와 수정을 이어갑니다. 사용자는 방향을 지시하고 중요한 결정과 최종 완료를 승인합니다.
+
+> **전역에는 작업·세션 관리자. 프로젝트에는 선택형 에이전트 팀.**
+>
+> 두 도구가 같은 Tack DB를 사용하므로 기록과 실행을 연결할 수 있습니다.
+
+## 왜 Tack인가
+
+에이전트가 코드를 작성하는 것과 개발 작업을 끝까지 관리하는 것은 별개의 문제입니다.
+
+| 개발하면서 생기는 문제 | Tack으로 얻는 것 |
+| --- | --- |
+| 세션을 바꾸면 맥락과 다음 행동을 다시 설명해야 합니다. | 작업·결정·의존성·체크포인트를 저장하고 다음 세션에서 재개합니다. |
+| TODO·진행·인계 문서가 늘어나 최신 상태를 찾기 어렵습니다. | 가변적인 작업 상태는 SQLite에, 오래 참조할 설계·API 문서는 저장소에 둡니다. |
+| 에이전트가 끝났다고 말해도 검증 여부를 알기 어렵습니다. | 실행 종료·작업 완료·검증 결과를 구분하고, 팀 목표의 최종 완료는 사용자가 승인합니다. |
+| 여러 에이전트의 담당 업무와 대기 이유가 보이지 않습니다. | 담당자·선행 업무·실행 큐·질문·검토·산출물을 연결해서 봅니다. |
+| 협업할수록 모델 호출과 토큰 사용량이 불투명해집니다. | 수집된 실행별 입력·캐시 입력·출력·소요 시간을 조회합니다. |
+
+## 두 가지 방식으로 사용합니다
+
+| | **Tack** | **Tack Orchestration** |
 | --- | --- | --- |
-| 목적 | 작업·세션·결정·검증·보관 문서 기록 | 목표 해석 → 팀 추천 → 질문 → 계획 승인 → 역할 실행·검토·재작업 |
-| 설치 범위 | 사용자 전역 | 명시적으로 선택한 프로젝트 |
-| 실행 명령 | `tack` (`work` 호환 명령) | `./.tack-orchestration/bin/tack-orchestration` |
-| 에이전트 개입 | 전역 기록 지침·handoff-state·수동 세션의 Hook 메타데이터 | 프로젝트 전용 스킬과 명시적 실행 요청 |
-| 에이전트 실행 | 하지 않음 | 설치된 Codex CLI의 `exec`로 역할을 순서대로 실행 |
-| Dashboard | 작업 보드·QA·세션·문서·프로젝트 | 기록 화면에 목표별 팀 채팅·역할 설정·실행 제어 추가 |
+| 역할 | 작업·세션 관리 | 역할 에이전트의 개발 업무 실행·조정 |
+| 설치 | 사용자 전역에 한 번 | 필요한 프로젝트에만 추가 |
+| 기록 | 작업, 결정, 의존성, 검증, 체크포인트, 보관 문서 | 같은 DB에 목표, 업무 배정, 메시지, 실행, 사용량 추가 |
+| 에이전트 실행 | 기록만 관리합니다. | 설치된 Codex CLI로 별도 역할 에이전트를 실행합니다. |
+| 화면 | 작업 보드·QA·세션·프로젝트·사용량 | 팀 단체방·직원 개인방·업무함·실행 큐 |
+| CLI | `tack` | `./.tack-orchestration/bin/tack-orchestration` |
 
-Orca·Codex App·터미널의 기존 세션은 기록 대상으로 연결할 수 있지만, 오케스트레이션 하네스가 그 세션을 직접 제어하지는 않는다. 역할 에이전트는 이 하네스가 시작한 별도 실행이다. 현재는 **작은 목표를 감독하면서 사용하는 초기 버전**이며 장시간 완전 무인 운영을 보장하지 않는다. Autopilot도 최초 계획 승인을 대신하지 않는다.
+**Tack만 사용해도 됩니다.** 대시보드를 띄우지 않아도 기록·조회·재개가 가능하며, 오케스트레이션도 CLI로 실행할 수 있습니다.
 
-Python 표준 라이브러리와 SQLite를 사용한다. 새 작업 DB는 DELETE 저널을 사용하며, 동시 쓰기는 트랜잭션·버전 검사·busy timeout으로 보호한다. 호스팅·PC 간 자동 동기화는 제공하지 않는다.
+## 빠른 시작
 
-## 한 번에 설치
+### 1. 전역 Tack 설치
+
+**macOS / Linux / WSL**, **Node.js 18+**, **Python 3.11+**, **Git**이 필요합니다. Windows native 설치는 아직 지원하지 않습니다.
+
+```sh
+npx --yes github:Linternas/tack setup
+```
+
+설치 후 새 터미널에서 프로젝트 폴더로 이동합니다.
+
+```sh
+cd /path/to/project
+
+tack init
+tack task add '로그인 오류 수정'
+tack status
+```
+
+`tack task add`는 미등록 프로젝트를 자동 등록하므로 `init`은 생략해도 됩니다. 명령을 찾지 못하면 새 터미널을 열거나 `~/.local/bin/tack`으로 실행합니다.
+
+### 2. 기록을 이어서 사용
+
+```sh
+# 필요한 작업만 가볍게 탐색
+
+tack status --status in_progress,todo
+
+# 실제 작업 ID로 상세 맥락·의존성·세션을 확인
+
+tack resume TASK_ID
+
+# 직접 시작한 에이전트 세션을 작업과 연결
+
+tack bind ACTUAL_THREAD_ID TASK_ID
+
+# 화면이 필요할 때만 실행
+
+tack dashboard --port 8788
+```
+
+브라우저에서 **[localhost:8788](http://127.0.0.1:8788)**을 엽니다. `TASK_ID`와 `ACTUAL_THREAD_ID`는 실제 출력·실행 환경에서 확인한 값으로 바꿉니다.
+
+> GitHub 설치는 원격에 게시된 코드를 사용합니다. 아직 푸시·병합하지 않은 로컬 기능은 포함되지 않습니다. 현재 clone의 코드를 설치하려면 저장소 루트에서 `node bin/tack.cjs setup`을 실행합니다.
+
+## 에이전트 팀과 개발하기
+
+### 프로젝트에 하네스 설치
+
+전역 Tack 설치와 별개로, 팀 실행이 필요한 프로젝트를 지정합니다. 에이전트 실행에는 해당 환경에서 **Codex CLI가 설치·인증**되어 있어야 합니다.
+
+```sh
+npx --yes --package=github:Linternas/tack tack-orchestration setup /path/to/project
+
+cd /path/to/project
+./.tack-orchestration/bin/tack-orchestration dashboard --port 8789 --allow-execution
+```
+
+**[localhost:8789/team](http://127.0.0.1:8789/team)**을 열어 목표를 맡깁니다. 로컬 소스로 설치하려면 Tack 저장소에서 `node bin/tack-orchestration.cjs setup /path/to/project`를 사용합니다.
+
+### 큰 그림을 주고, 필요한 순간에 결정
+
+예를 들어 이렇게 시작합니다.
+
+> “사람들이 알고 있던 룰과 다른 체스 앱을 만들어주세요.”
+
+1. **기획자가 구체화합니다.** 모호한 조건을 질문하고 필요한 담당자·파일 범위·선행 업무·검증 방법을 제안합니다. 필요한 역할이나 스킬이 없다면 추가 설정이 필요합니다.
+2. **사용자가 범위를 승인합니다.** 직원 설정에서 이름·책임·모델·설치된 스킬을 지정하고 제안된 업무를 확인합니다.
+3. **독립 업무는 동시에 진행합니다.** 기본 3명, 설정으로 최대 8명까지 실행합니다. 같은 직원의 다음 업무와 선행 작업이 있는 업무는 큐에서 기다립니다.
+4. **직원들이 질문하고 검토합니다.** 동료 답변이나 사용자 결정을 기다리는 동안 다른 진행 가능한 업무는 계속 처리합니다.
+5. **검증 후 사용자가 완료를 승인합니다.** Autopilot을 켜면 승인 범위 안의 검토 → 수정 → 재검토를 설정한 한도 내에서 이어갑니다.
+
+파일을 수정하는 직원은 별도 복사 작업 공간에서 실행합니다. 승인된 변경을 원본에 합칠 때 기준 해시를 검사하고, 충돌하면 산출물을 보존한 채 확인을 요청합니다.
+
+### 대화가 기본 화면입니다
+
+| 화면 | 할 수 있는 일 |
+| --- | --- |
+| **팀 단체방** | 목표와 업무를 공유하고 직원 간 질문·답변·검토 흐름을 확인합니다. |
+| **직원 개인방** | 특정 직원에게 질문하고 후속 대화를 이어갑니다. |
+| **대화 안의 결정 요청** | 직원 질문에 답하고 업무 범위·검증 결과를 확인합니다. |
+| **업무함·실행 큐** | 담당자·선행 업무·대기 사유·산출물·재시도·중단을 확인합니다. |
+| **직원·팀 설정** | 프로젝트별 역할·모델·스킬·동시 실행 수·Autopilot 한도를 정합니다. |
+| **사용량** | 수집된 입력·캐시 입력·출력·실행 시간과 목표·역할별 집계를 봅니다. |
+
+메모는 모델을 호출하지 않습니다. 개인방 질문과 팀방의 `@직원 이름` 질문은 읽기 전용 업무로 큐에 들어갑니다. 코드 수정은 **업무 배정 → 파일 범위 승인**을 거칩니다. 대화는 선택한 목표별로 보관하며, 개인방 구분은 사용자별 접근 권한 기능이 아닙니다.
+
+<details>
+<summary><strong>화면 없이 CLI로 팀 실행하기</strong></summary>
+
+프로젝트 루트에서 실행합니다. 각 변경 요청의 `GOAL_ID`와 `N`은 `team show`로 확인한 실제 ID와 최신 버전으로 바꿉니다.
+
+```sh
+HARNESS=./.tack-orchestration/bin/tack-orchestration
+
+"$HARNESS" team create '새로운 룰의 체스 앱 만들기'
+"$HARNESS" team show GOAL_ID
+"$HARNESS" team run GOAL_ID --version N
+
+# 질문에는 실제 답변을 전달하고, 제안된 범위를 확인한 뒤 승인
+"$HARNESS" team approve GOAL_ID --version N
+"$HARNESS" team show GOAL_ID
+"$HARNESS" team run GOAL_ID --version N
+
+# 업무와 실제 검증 결과를 확인한 뒤 최종 완료 승인
+"$HARNESS" team accept GOAL_ID --version N
+```
+
+질문·답변·배정은 `team message`, `team reply`, `team assign`의 JSON 입력으로 전달합니다. 예를 들어 `question.json`에 다음 내용을 저장합니다. `version`은 목표의 최신 버전이며 아래 `7`은 예시입니다.
+
+```json
+{
+  "version": 7,
+  "kind": "question",
+  "employee": "implement",
+  "channel": "dm:implement",
+  "body": "현재 구현 구조를 설명해주세요.",
+  "client_id": "question-001"
+}
+```
+
+```sh
+"$HARNESS" team message GOAL_ID --json question.json
+"$HARNESS" team show GOAL_ID
+"$HARNESS" team run GOAL_ID --version N
+```
+
+새 요청에는 고유한 `client_id`를 사용합니다. CLI는 질문을 등록한 뒤 실행 요청도 명시적으로 전달합니다. 실행 요청이 수락됐다는 응답은 완료를 뜻하지 않습니다.
+
+</details>
+
+## 개발 흐름에 어떻게 개입하나
+
+```mermaid
+flowchart LR
+    A[터미널 · Codex App · Orca] --> B[전역 지침 · 체크포인트 · 수신된 Hook]
+    B --> C[(Tack SQLite)]
+    D[사용자의 목표 · 명시적 실행 요청] --> E[프로젝트별 Orchestration]
+    E --> F[기획 · 개발 · 검토 직원]
+    F --> E
+    E --> C
+    C --> G[CLI · Dashboard]
+```
+
+| 개입 지점 | 실제 동작 |
+| --- | --- |
+| **전역 `AGENTS.md`** | 설치 과정에서 기록 지침을 추가합니다. 지침을 읽는 에이전트가 작업 시작 시 상태를 조회하고 진행·검증을 Tack에 기록하도록 안내합니다. |
+| **`handoff-state` 스킬** | 긴 작업의 결정·변경·검증·다음 행동을 체크포인트로 저장하고 다음 세션에서 재개합니다. |
+| **Hook** | 지원 환경에서 신뢰된 Hook이 보낸 세션·실행 메타데이터를 기록합니다. 직접 시작한 세션은 실제 ID와 작업을 연결해야 합니다. |
+| **프로젝트 하네스** | 사용자가 실행을 요청하면 별도 역할 에이전트를 시작하고 업무 배정·대기·검토·수정과 사용량을 관리합니다. |
+| **Dashboard** | 같은 DB의 상태를 보여주고, 실행을 허용한 프로젝트에서는 지시·답변·승인을 전달합니다. |
+
+**기록 지침, 관찰 Hook, 실행 하네스는 서로 다른 역할입니다.** Hook 설정 파일이 있다는 것만으로 자동 기록을 보장하지 않습니다. 신뢰 절차와 실제 이벤트 수신은 `tack doctor`로 확인합니다. 설치가 이미 실행 중인 에이전트의 sandbox 권한을 즉시 바꾸지는 않습니다.
+
+기존 Codex App·Orca·터미널 세션은 기록 대상으로 연결할 수 있습니다. 하네스가 그 세션을 직접 조종하는 것은 아니며, 직원 실행은 하네스가 시작한 별도 Codex 프로세스입니다.
+
+## 기록은 어디에 남나
+
+- **작업·세션·검증·대화·실행 이력:** 기본 `~/.local/share/agent-work` 아래 프로젝트별 SQLite DB.
+- **오케스트레이션 런타임·격리 작업본:** 선택한 프로젝트의 `.tack-orchestration/`.
+- **제품 요구사항·API 계약·설계 문서:** 기존 프로젝트 저장소. 진행 상황 문서와 분리합니다.
+- **설치 코드:** `~/.local/lib/tack/releases/`의 해시별 런타임. 기존 DB와 프로젝트 ID는 유지합니다.
+
+Python 표준 라이브러리로 동작하며 런타임용 외부 Python 패키지가 필요하지 않습니다. CLI와 Dashboard는 같은 저장·검증 경로를 사용합니다. 사용량은 실행기가 제공한 값만 기록하며 미수집 값을 추정하지 않습니다. 캐시 입력은 입력 토큰의 일부이며, 화면용 요약이나 메모 저장을 위해 추가 모델 호출을 하지 않습니다.
+
+## 업데이트
+
+```sh
+tack update
+```
+
+전역 Core와 이미 설치한 프로젝트 하네스를 함께 갱신합니다. 프로젝트마다 `setup`을 반복하지 않으며, 초기 권한·전역 지침·Hook 설정을 다시 주입하지 않습니다. 실행 중인 프로젝트는 건너뛸 수 있으므로 결과를 확인합니다. 켜져 있던 Dashboard는 종료 후 다시 실행해야 새 코드가 적용됩니다.
+
+## 현재 범위
+
+Tack은 **PC별 로컬 개발 도구**입니다. 오케스트레이션은 작은 목표를 감독하며 사용하는 초기 단계입니다.
+
+- 현재 역할 실행기는 **Codex CLI**입니다. 모든 에이전트 제품을 자동 제어하는 범용 실행기는 아닙니다.
+- 같은 checkout에서는 목표를 FIFO로 처리하고, 한 목표 안의 독립 직원 업무를 병렬 실행합니다.
+- 사용자 질문·새 업무 범위·최종 완료는 사용자 판단을 기다립니다. Autopilot은 커밋·푸시·배포를 자동 승인하지 않습니다.
+- 원격 Dashboard 호스팅·인증·PC 간 자동 동기화·장시간 완전 무인 운영은 제공하거나 보장하지 않습니다.
+- 사용량 조회는 계측 도구입니다. 캐시 적중이나 실제 과금액을 보장하지 않으며 금액 추정은 제공하지 않습니다.
+
+## 명령과 운영 레퍼런스
+
+설치·권한·복구·API 등 상세 내용은 필요한 항목을 펼쳐 확인합니다.
+
+<details>
+<summary><strong>설치 상세 · PATH · 호환 명령</strong></summary>
 
 Node.js 18 이상/npm과 Python 3.11 이상이 있는 macOS/Linux/WSL에서 사용한다. npm 런처는 기존 Python 코어를 실행하며 별도 라이브러리를 다운로드하지 않는다. Windows native 설치는 아직 지원하지 않는다.
 
@@ -69,9 +290,23 @@ Hook 설정 파일이 있다는 이유만으로 자동 기록이 동작한다고
 
 기존 clone 방식도 유지한다: `python3 install.py`. 이 경로는 CLI와 호환 별칭만 설치하며 자동 초기 설정을 수행하지 않는다. 실행 파일 기본값은 `~/.local/bin/tack`, 데이터 기본값은 `~/.local/share/agent-work`다.
 
-`tack task add`는 프로젝트가 없으면 자동 등록한다. 단순 질문·짧은 설명은 등록하지 않는다. 후속 행동이 있는 분석·리뷰와 코드 변경을 작업으로 관리한다. `tack status`, `task show`, `sessions`, `resume`, `projects`는 읽기 전용으로 동작하며 등록부·DB를 갱신하지 않는다. `tack status`는 미완료 항목과 재개 세션의 요약, `tack status --all`은 완료·보관 항목도 보여준다. 전체 내용은 `task show` 또는 `resume`으로 읽는다.
+`tack task add`는 프로젝트가 없으면 자동 등록한다. 단순 질문·짧은 설명은 등록하지 않는다. 후속 행동이 있는 분석·리뷰와 코드 변경을 작업으로 관리한다. `tack status`, `task show`, `sessions`, `resume`, `projects`는 읽기 전용으로 동작하며 등록부·DB를 갱신하지 않는다. `tack status`는 미완료 항목과 재개 세션의 요약, `tack status --all`은 완료·보관 항목도 보여준다. 기본 목록은 상태별 개수와 ID·제목·분류·상태·버전·선행 작업만 출력하며 장문 next_action은 제외한다. 전체 내용은 `task show` 또는 `resume`으로 읽는다.
 
-## 프로젝트와 저장 위치
+```sh
+tack status --status in_progress,todo
+tack status --category qa --search '수자원'
+tack status --status done           # 명시한 상태는 완료 항목도 조회
+tack status --all --full            # 기존 목록 형식과 next_action 포함
+```
+
+`--status`와 `--category`는 쉼표로 여러 값을 지정하고 함께 사용하면 교집합을 조회한다. `--search`는 ID와 작업 텍스트 필드에서 대소문자를 구분하지 않고 검색한다. 상태별 개수와 세션 목록도 필터 결과에 맞춘다. `--all`은 완료·보관 작업과 종료 세션을 포함하며, `--full`은 출력 상세도만 바꾼다.
+
+`resume`은 대상 작업과 현재 세션 기록을 그대로 제공하고 선행 작업은 ID·제목·상태·버전·해결 내용·다음 행동·의존성만 제공한다. 선행 작업 원문은 `task show ID` 또는 `resume ID --full`로 확인한다. 기존 resume은 과거 체크포인트 이력을 출력하지 않으므로 현재 세션의 결정·검증·다음 행동을 임의로 줄이지 않는다.
+
+</details>
+
+<details>
+<summary><strong>프로젝트와 저장 위치</strong></summary>
 
 `tack projects`로 전역 등록 목록을 확인한다. 프로젝트에는 UUID를 부여한다. 같은 Git common directory를 가진 worktree는 같은 프로젝트를 공유하고, 세션에는 실제 checkout·브랜치를 별도로 기록한다.
 
@@ -87,7 +322,10 @@ tack --project EXISTING_PROJECT_UUID status
 
 `AGENT_WORK_HOME`으로 사용자 데이터 위치를 지정할 수 있다. 이 값을 바꾸면 별도 등록부를 사용하므로 운영 중 임의로 변경하지 않는다.
 
-## 프로젝트 보관·복원·영구 삭제
+</details>
+
+<details>
+<summary><strong>프로젝트 보관·복원·영구 삭제</strong></summary>
 
 Dashboard의 **전체 프로젝트**에서 보관하고, **보관 프로젝트 포함**을 켜서 보관 해제하거나 Tack 기록을 영구 삭제할 수 있다. CLI와 Dashboard는 같은 상태·버전 검사와 삭제 범위를 사용한다.
 
@@ -116,7 +354,10 @@ tack project delete PROJECT_ID --version N --confirm '프로젝트 이름' --inc
 
 API는 `GET /api/projects?all=1`, `GET /api/projects/{id}`와 `POST /api/projects/{id}/archive|restore|delete`를 제공한다. 보관/복원은 `{ "version": N }`, 삭제는 최신 version과 `confirmation`(프로젝트 이름), `include_backups` boolean을 전달한다. 로컬 Host·동일 Origin 검사도 적용한다.
 
-## 에이전트 샌드박스 권한
+</details>
+
+<details>
+<summary><strong>에이전트 샌드박스 권한</strong></summary>
 
 전역 설치와 파일 소유권만으로 에이전트의 DB 쓰기가 허용되지는 않는다. SQLite는 DB와 같은 폴더에 저널을 만들어야 하므로 DB 파일만이 아니라 데이터 폴더를 쓰기 허용해야 한다. Codex의 기존 workspace-write 설정은 사용자 config.toml에 아래 항목을 기존 목록과 병합한다. 홈 전체를 허용하거나 DB를 chmod 777로 바꾸지 않는다.
 
@@ -133,7 +374,10 @@ Codex 설정 위치는 기본 `~/.codex/config.toml` 또는 실제 `CODEX_HOME/c
 
 `attempt to write a readonly database`가 나오면 파일 mode뿐 아니라 현재 세션의 writable roots를 확인한다. 현재 세션에서는 환경이 제공하는 승인 절차를 통한 해당 tack 명령 실행만 사용하며, 다른 DB·Markdown·서버 우회 저장소를 만들지 않는다. 권한 승인이 거부되면 미기록 내용과 사유를 보고한다.
 
-## 수정과 체크포인트
+</details>
+
+<details>
+<summary><strong>수정과 체크포인트</strong></summary>
 
 수정은 JSON 파일 또는 표준 입력으로 전달한다. 기존 항목·세션 수정에는 조회한 최신 `version`을 넣는다. 충돌은 종료 코드 1 / 상태 409로 반환되며 입력 파일을 보존하고 최신 내용을 확인한다. 자동으로 최신 버전에 덮어쓰지 않는다.
 
@@ -145,6 +389,8 @@ tack resume LOCAL-0001
 tack sessions
 tack sessions --all
 ```
+
+`task add`, `task start`, `task update`, `checkpoint`는 기본적으로 저장된 ID·버전·상태·갱신 시각만 반환한다. checkpoint에는 연결된 task_id도 포함한다. 기존 `task`/`session` 객체 이름은 유지하며 전체 본문과 이력이 필요한 호출에는 `--full`을 붙인다. Store와 Dashboard/API 응답, DB 원문·이력·버전 검증은 변경하지 않는다.
 
 작업 수정 예시:
 
@@ -160,7 +406,10 @@ tack sessions --all
 
 기존 체크포인트 수정 시 `version`도 전달한다. 세션 상태는 `active`, `blocked`, `completed`다. 세션 종료는 작업 완료·QA 통과를 의미하지 않는다. 작업 완료 상태와 세션 종료를 각각 기록한다. 완료 세션은 기본 재개 목록에서 제외한다. 세션은 여러 개 연결 가능하며 task ID·workspace·branch·agent·thread ID와 전체 체크포인트 이력을 보존한다. CLI는 호출된 checkout과 현재 브랜치를 기본 기록한다. 비밀·인증 정보·대화 전문은 저장하지 않는다.
 
-## Dashboard와 API
+</details>
+
+<details>
+<summary><strong>Dashboard와 API</strong></summary>
 
 `tack dashboard --port 8788`은 loopback에서만 수신한다. `/`는 작업 보드, `/qa`는 QA 워크플로우, `/sessions`는 재개·체크포인트 화면, `/projects`는 전체 프로젝트 요약이다. 프로젝트 선택으로 다른 등록 프로젝트를 열 수 있다. 서버를 끄더라도 CLI는 계속 사용할 수 있다.
 
@@ -181,42 +430,60 @@ tack init --source-root docs --source-root src
 
 `/api/source?path=docs/spec.md`로 허용된 텍스트 파일을 읽는다. 비밀 파일이 있는 폴더를 허용 목록에 넣지 않는다. 경로 탈출·프로젝트 밖 심볼릭 링크·DB 파일 다운로드는 허용하지 않는다.
 
-## 백업과 이전
+</details>
 
-`tack backup`은 실행 중에도 SQLite backup API로 일관된 복사본을 만든다. WAL 동작 중인 DB 파일 하나만 복사하지 않는다.
+<details>
+<summary><strong>실행 사용량</strong></summary>
 
-기존 CTMS 보드는 원본 서버를 중지한 뒤 아래 명령으로 이관한다.
+Core의 `Usage` 원장이 실행별 수집·집계를 담당하고 프로젝트 하네스의 Codex 어댑터가 완료 턴 이벤트를 정규화해 전달한다. Core는 에이전트를 실행하지 않는다. `tack usage [--goal GOAL_ID] [--role ROLE_ID] [--full]`, `GET /api/usage?goal=...&role=...`, Dashboard `/usage`가 동일한 SQLite 원장을 조회한다. CLI 기본 출력은 집계만 제공하며 --full은 최근 100개 실행을 포함한다. Dashboard/API도 집계는 전체 실행, 내역은 최근 100개를 제공한다.
 
-```sh
-tack migrate --board /path/to/dashboard.sqlite3 --notes /path/to/old-notes --active-note /path/to/current-handoff.md
-```
+입력·캐시 입력·출력·총량, 완료 턴 수, 소요 시간, 요청 모델·실행기, 목표·작업·역할, 최초 실행/수정 루프/재시도/질문을 구분한다. 캐시 입력은 전체 입력의 일부이므로 총량에 재합산하지 않는다. 캐시 비율은 입력과 캐시가 모두 수집된 실행만 대상으로 계산하며 수집 실행 수를 표시한다. 완료 턴 수는 내부 모델 호출 수가 아니다. 기본 모델 설정은 실제 모델 이름이 확인되지 않은 것으로 표시한다.
 
-이관은 원본 작업·이력의 전체 행을 대조한 후 전환한다. 원본 DB 백업, 모든 지정 Markdown의 원본과 SHA256, 증거 파일을 프로젝트별 `migration-*` 폴더에 보관하고 `manifest.json`을 생성한다. 선택한 `--active-note`만 재확인 대상 작업·세션으로 연결하며 과거 완료 상태를 변경하지 않는다. 이미 이관했거나 데이터가 있는 대상은 덮어쓰지 않는다. 원본 보존과 별개로 원본 서버를 계속 운영하지 않는다.
+원문·프롬프트·시크릿을 사용량 원장에 기록하지 않는다. 미제공·잘못된 수치는 null(미수집)로 유지하며 부분 합계는 수집 범위를 함께 표시한다. 과거 executions는 기존 총량만 읽어 보여주고 과거 세부 값을 추정하거나 DB를 재작성하지 않는다. 실행기가 사용량을 전달하지 않은 세션은 자동 계측되지 않는다. 원장/캐시 비율은 기존 실행 토큰 한도를 변경하지 않는다. 가격·캐시 쓰기 요금이 검증되지 않았으므로 금액 추정은 제공하지 않는다.
 
-과거 기록을 현재 검증으로 취급하지 않는다. 새 도구에 변경이 쌓인 뒤 복구할 때는 새 DB도 먼저 백업하고 변경분을 보존한다. 단순히 옛 DB로 바꾸면 전환 이후 기록이 누락될 수 있다.
+</details>
 
-## 검증
+<details>
+<summary><strong>직원 실행 계약 · 큐 · 세션 · 메신저</strong></summary>
 
-```sh
-python3 -m unittest discover -s tests -p 'test_*.py' -v
-AGENT_WORK_JSDOM_ROOT=/path/to/project/with/jest-environment-jsdom node --test tests/*.cjs
-```
-
-런타임에는 외부 의존성이 없다. DOM 테스트에만 기존 프로젝트의 `jest-environment-jsdom`이 필요하다. DOM 테스트는 실제 브라우저·시각 검수가 아니다. 테스트는 임시 DB와 임시 loopback 포트만 사용한다.
-
-## 보관 문서 조회
-
-원본 삭제 전 `tack document import FILE --kind work`로 UTF-8 원문과 SHA256을 DB에 보존할 수 있다. 동일 원문은 중복 생성하지 않고, 내용이 바뀌면 이전 문서를 보존한 채 별도 ID를 부여한다.
+프로젝트 하네스의 `/team`이 새 목표의 기본 팀 화면이다. 프로젝트별 직원은 기존 Team 설정의 이름·책임·모델·스킬·권한을 사용한다. Core의 작업·버전·이력·사용량 저장은 유지하고, 선택 설치한 `workforce`가 업무 소유권과 요청함을 관리한다. 기존 `/goals`와 단계 실행 목표는 그대로 유지한다.
 
 ```sh
-tack document list
-tack document show DOC_ID
-tack document show archive:DOC_ID
+HARNESS=./.tack-orchestration/bin/tack-orchestration
+
+"$HARNESS" team create '새로운 룰의 체스 앱 만들기'
+"$HARNESS" team show GOAL_ID
+"$HARNESS" team run GOAL_ID --version N
+"$HARNESS" team approve GOAL_ID --version N
+"$HARNESS" team run GOAL_ID --version N
+# 실제 업무와 검증이 끝난 뒤 사용자 최종 승인
+"$HARNESS" team accept GOAL_ID --version N
 ```
 
-CLI 조회는 서버 없이 동작한다. Dashboard의 `/documents`는 보관 문서 목록, `/documents/DOC_ID`는 원문과 참조 링크를 제공한다. 작업의 근거 경로는 `archive:DOC_ID`로 지정한다. 삭제된 원래 경로도 등록된 보관 문서에 한해 조회 가능하며 임의의 외부 파일 읽기는 허용하지 않는다. 보관 문서가 있다는 이유로 과거 작업·QA를 현재 완료나 미해결로 바꾸지 않는다.
+목표를 맡기면 기획 직원이 필요한 결정을 묻고 담당자·구체적인 파일·선행 업무·검증 명령을 제안한다. 사용자가 범위를 승인하면 의존성이 충족된 업무를 배정한다. 직원의 동료 질문은 읽기 전용 업무로 전달되고 답변 후 원래 업무가 이어진다. 사용자 질문은 답변을 기다리며 다른 진행 가능한 업무는 계속 처리할 수 있다. 완료된 구현은 독립 검토 직원에게 전달한다. Autopilot은 승인 범위의 수정만 원래 담당자에게 돌려보낸다. 새 업무 제안과 최종 완료는 항상 사용자가 승인한다.
 
-## 선택형 프로젝트 오케스트레이션
+직원 대화는 목표·업무·직원·읽기/쓰기 권한별로 격리하며 프로필·스킬 변경 시 새 대화를 사용한다. 지침과 파일 범위 승인이 바뀌면 구현 업무를 재승인한다. 한 목표에서 기본3명, 설정의 `max_parallel`로 최대8명의 직원을 동시 실행한다. 같은 직원은 한 번에 한 업무만 맡는다. 각 직원은 별도 복사 작업 공간에서 실행하며, 승인된 파일만 기준 해시를 검사한 뒤 원본에 합친다. 같은 파일이 먼저 변경되거나 승인 밖 수정이 발견되면 원본을 덮어쓰지 않고 결과를 보존한다. 충돌 업무는 최신 기준으로 명시적으로 재시도한다. 질문 깊이8, 원 업무 답변20, 목표당 업무200, 실행당 배정100회와 기존 토큰·시간·자동 수정 한도를 적용한다. 복사 작업 공간 안에서도 개별 파일 allowlist는 OS 수준 경계가 아니며, 변경 파일을 통합 전에 검사한다. 의존성 폴더는 공유 링크이고 sandbox 외부 쓰기 허용은 추가하지 않는다. 원문 결과·질문·답변·기존 이력은 잘라서 저장하지 않는다.
+
+중단 업무는 업무함의 재시도 또는 `team retry`로 재개한다. 관리자 응답이 없을 때는 기존 실행 종료를 확인한 뒤 `goal recover --confirmed-stopped`로 복구한다. 실행 완료와 목표 완료를 구분하며, 최종 검증 결과가 성공이어도 사용자 완료 승인 전에는 목표를 done으로 표시하지 않는다.
+
+### 실행 큐와 대기
+
+`team run`과 화면의 실행 요청은 SQLite FIFO 큐에 저장한다. 분리된 디스패처가 처리하므로 대시보드를 닫아도 실행이 이어진다. 같은 checkout에서는 목표 하나를 조정하며 그 안의 독립 업무를 병렬 실행한다. 사용자 답변·승인을 기다리는 목표는 슬롯을 놓고 다음 목표가 진행한다. 실행 중에도 업무 배정·답변·승인이 가능하다. 화면의 실행 큐에서 직원 슬롯·선행 업무·답변 대기를 구분한다.
+
+대기 요청은 취소할 수 있고 실행 중 중단은 해당 실행이 시작한 프로세스 그룹들만 종료한다. DB 큐는 재시작 후 보존되며 실행 허용 대시보드 시작 또는 `"$HARNESS" team drain`으로 다시 처리한다. 비정상 종료된 실행은 자동 재실행하지 않고 종료 확인·복구를 요구한다. 대기 중 목표 버전이 바뀌면 최신 상태에서 다시 요청해야 한다. 작업 복사본과 통합 전후 산출물은 프로젝트의 `.tack-orchestration/workspaces/`에 남으므로 디스크 사용량에 주의한다.
+
+### 팀 메신저
+
+`/team`은 왼쪽의 팀 단체방·직원 개인방과 중앙 대화로 구성한다. 프로젝트와 작업 목표를 선택하고 직원 개인방에서 질문하거나 팀방의 `@직원 이름`으로 질문 대상을 지정한다. 메모는 모델을 호출하지 않으며, 질문은 읽기 전용 업무로 실행 큐에 들어간다. 코드 수정은 `업무 배정`에서 담당자·파일·선행 업무를 지정하고 범위를 승인한다.
+
+대화 안에서 직원의 결정 요청에 답하고 업무 제안·산출물·최종 검증을 확인한다. 업무함은 오른쪽 상세 패널로 열린다. 긴 결과는 펼쳐 읽으며 원문은 DB에 보존한다. 방별 최근 메시지·안 읽음·초안을 구분하며 모바일에서는 목록과 대화를 전환한다. 개인 대화의 후속 질문은 목표·직원·대화방·프로필이 같은 세션을 재사용한다. 기존 메시지는 팀방에 그대로 남는다. 개인방은 로컬 작업 내 대화 구분이며 사용자별 접근 권한이나 비밀 대화 기능은 아니다.
+
+</details>
+
+<details>
+<summary><strong>기존 단계 실행 · 역할 · Crewset · 복구</strong></summary>
+
+이 항목의 `goal` 명령과 `/goals`는 기존 **단계 실행 방식**을 설명합니다. 기본 직원 팀 화면은 `/team`이며 `team` 명령을 사용합니다. 두 방식의 실행·완료 규칙을 구분해 사용합니다.
 
 전역 `tack`은 작업·세션·체크포인트·문서 및 수동 세션의 Hook 메타데이터만 관리한다. 목표를 해석하거나 에이전트를 실행하지 않는다. 전역 설치에는 오케스트레이션 실행 코드·채팅 화면·스킬을 포함하지 않는다. 기존 전역 stock 오케스트레이션 스킬은 백업 후 비활성화하고, 사용자가 수정한 파일은 덮어쓰거나 삭제하지 않는다. DB와 과거 목표·실행 이력은 그대로 보존한다.
 
@@ -308,7 +575,10 @@ Crewset의 `frontend-app`, `frontend-web` ID는 Tack에서 `frontend_app`, `fron
 
 기존 Crewset 프로젝트를 가져올 때 config와 역할 문서·프로젝트별 메모는 읽기만 한다. 상대 경로·심볼릭 링크 경계·관리 블록이 잘못되면 설정을 저장하지 않는다. Crewset의 Markdown 세션 생성기, AGENTS 세션 기록 블록, dated session history는 새 하네스에 이식하지 않는다. 기록은 기존 Tack DB에 유지하며 Crewset 원본 파일·과거 세션은 삭제하거나 다시 쓰지 않는다.
 
-## 설치 이후 업데이트
+</details>
+
+<details>
+<summary><strong>업데이트 상세 · 로컬 소스 · 구버전 전환</strong></summary>
 
 초기 설치는 한 번만 하고 이후에는 어디서든 다음 명령을 실행한다. 프로젝트마다 setup을 다시 실행할 필요가 없다. 현재 `AGENT_WORK_HOME`(미지정 시 기본 데이터 폴더)의 설치 목록과 등록 프로젝트를 대상으로 한다.
 
@@ -345,6 +615,48 @@ tack update --source /path/to/tack
 
 버전은 `major.minor.patch`로 관리하며 Python의 `__version__`과 `package.json`을 함께 맞춘다. 동일 버전이라도 소스가 달라지면 런타임 해시로 구분해 갱신한다. 업데이트 기능 자체는 CLI의 새 버전부터 제공되므로, 이전 설치본에 명령이 없다면 위 로컬 소스 경로로 한 번 전환한다. 새 PC의 초기 설치는 앞의 setup 절차를 따른다.
 
-## 현재 사용 범위
+</details>
 
-작은 목표에서 계획·역할·스킬·파일 범위·검증 명령을 검토하고 실행하는 방식으로 사용한다. 초기에는 Autopilot의 수정 반복을 1~2회로 제한하고 최종 코드와 실제 테스트 결과를 확인하는 것을 권한다. 역할 이름이나 passed 판정만으로 요구사항 충족을 보장하지 않는다. 기존 세션 제어, 여러 PC의 중앙 실행 관리, 원격 Dashboard 호스팅과 인증은 제공하지 않는다.
+<details>
+<summary><strong>백업과 이전</strong></summary>
+
+`tack backup`은 실행 중에도 SQLite backup API로 일관된 복사본을 만든다. WAL 동작 중인 DB 파일 하나만 복사하지 않는다.
+
+기존 CTMS 보드는 원본 서버를 중지한 뒤 아래 명령으로 이관한다.
+
+```sh
+tack migrate --board /path/to/dashboard.sqlite3 --notes /path/to/old-notes --active-note /path/to/current-handoff.md
+```
+
+이관은 원본 작업·이력의 전체 행을 대조한 후 전환한다. 원본 DB 백업, 모든 지정 Markdown의 원본과 SHA256, 증거 파일을 프로젝트별 `migration-*` 폴더에 보관하고 `manifest.json`을 생성한다. 선택한 `--active-note`만 재확인 대상 작업·세션으로 연결하며 과거 완료 상태를 변경하지 않는다. 이미 이관했거나 데이터가 있는 대상은 덮어쓰지 않는다. 원본 보존과 별개로 원본 서버를 계속 운영하지 않는다.
+
+과거 기록을 현재 검증으로 취급하지 않는다. 새 도구에 변경이 쌓인 뒤 복구할 때는 새 DB도 먼저 백업하고 변경분을 보존한다. 단순히 옛 DB로 바꾸면 전환 이후 기록이 누락될 수 있다.
+
+</details>
+
+<details>
+<summary><strong>보관 문서 조회</strong></summary>
+
+원본 삭제 전 `tack document import FILE --kind work`로 UTF-8 원문과 SHA256을 DB에 보존할 수 있다. 동일 원문은 중복 생성하지 않고, 내용이 바뀌면 이전 문서를 보존한 채 별도 ID를 부여한다.
+
+```sh
+tack document list
+tack document show DOC_ID
+tack document show archive:DOC_ID
+```
+
+CLI 조회는 서버 없이 동작한다. Dashboard의 `/documents`는 보관 문서 목록, `/documents/DOC_ID`는 원문과 참조 링크를 제공한다. 작업의 근거 경로는 `archive:DOC_ID`로 지정한다. 삭제된 원래 경로도 등록된 보관 문서에 한해 조회 가능하며 임의의 외부 파일 읽기는 허용하지 않는다. 보관 문서가 있다는 이유로 과거 작업·QA를 현재 완료나 미해결로 바꾸지 않는다.
+
+</details>
+
+<details>
+<summary><strong>검증</strong></summary>
+
+```sh
+python3 -m unittest discover -s tests -p 'test_*.py' -v
+AGENT_WORK_JSDOM_ROOT=/path/to/project/with/jest-environment-jsdom node --test tests/*.cjs
+```
+
+런타임에는 외부 의존성이 없다. DOM 테스트에만 기존 프로젝트의 `jest-environment-jsdom`이 필요하다. DOM 테스트는 실제 브라우저·시각 검수가 아니다. 테스트는 임시 DB와 임시 loopback 포트만 사용한다.
+
+</details>
