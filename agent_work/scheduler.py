@@ -1,4 +1,5 @@
 """Bounded scheduling; approved conditions and execution attempts gate every integration."""
+import time
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
 from .store import BoardError
@@ -105,7 +106,7 @@ def run_jobs(workforce,key,worker,policy):
                 if job['status']=='waiting_jobs' and set(job.get('delegated_to',[]))<=done:
                     results=[{'from':child['employee'],'body':child['result']} for child in jobs if child['id'] in job.get('delegated_to',[])]
                     with workforce.store.connect() as db:workforce.change(db,job['id'],{'status':'queued','replies':[*job['replies'],*results]},job['version'])
-            busy={j['employee'] for j in active.values()}
+            busy={j['employee'] for j in active.values()};waiting_slot=False
             if not halted:
                 for job in workforce.jobs(key):
                     if len(active)>=capacity:break
@@ -118,8 +119,12 @@ def run_jobs(workforce,key,worker,policy):
                     if job['kind'] in {'task','document'} and (reason or job['approved_hash']!=workforce.contract(job,policy['roles'])):
                         with workforce.store.connect() as db:workforce.change(db,job['id'],{'status':'awaiting_approval','result':reason},job['version'])
                         continue
-                    job=collab.claim(key,job['id'],worker);active[pool.submit(execute,goal,job)]=job;busy.add(job['employee']);dispatched+=1
-            if not active:break
+                    job=collab.claim(key,job['id'],worker)
+                    if job is None:waiting_slot=True;continue
+                    active[pool.submit(execute,goal,job)]=job;busy.add(job['employee']);dispatched+=1
+            if not active:
+                if waiting_slot and not halted:time.sleep(.2);continue
+                break
             completed,_=wait(active,timeout=.1,return_when=FIRST_COMPLETED)
             for future in completed:finish(future,active.pop(future))
     collab.synchronize(key)

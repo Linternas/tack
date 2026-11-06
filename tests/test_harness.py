@@ -43,7 +43,7 @@ class HarnessTests(unittest.TestCase):
             with urllib.request.urlopen(origin+'/api/projects') as response:data=json.load(response)
             self.assertEqual(data['projects'][0]['name'],'project');self.assertEqual(data['projects'][0]['open_tasks'],1)
             with urllib.request.urlopen(origin+'/api/context') as response:self.assertFalse(json.load(response)['orchestration_enabled'])
-            for path in ['/api/orchestration','/api/team/catalog','/goals']:
+            for path in ['/api/orchestration','/api/team/catalog','/goals','/office-scene.js','/office-atlas.png','/office-room.png']:
                 with self.assertRaises(urllib.error.HTTPError) as error:urllib.request.urlopen(origin+path)
                 self.assertEqual(error.exception.code,404);error.exception.close()
         finally:proc.terminate();proc.wait(timeout=5);proc.stdout.close()

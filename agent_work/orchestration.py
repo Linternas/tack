@@ -216,7 +216,8 @@ class Orchestrator(Tracker):
                 for other in db.execute('SELECT id,data FROM goals WHERE id<>?',(key,)):
                     state=json.loads(other['data'])
                     if state.get('worker') and state.get('workspace')==current['workspace']:
-                        raise BoardError('같은 checkout에 실행 소유자가 있습니다.',409)
+                        from .organization import Organization
+                        if not Organization(self.store,current['workspace']).parallel(current,state):raise BoardError('같은 checkout의 팀/경로에 실행 소유자가 있습니다.',409)
             current.update(change)
             db.execute('UPDATE goals SET data=?,version=version+?,updated_at=? WHERE id=?',(json.dumps(current,ensure_ascii=False),0 if set(change)=={'heartbeat'} else 1,timestamp(),key))
         return self.goal(key)
@@ -246,7 +247,7 @@ class Orchestrator(Tracker):
         key=identifier('EXEC-');now=timestamp()
         with self.store.connect() as db:
             old=next((json.loads(row['data']) for row in db.execute('SELECT data FROM executions WHERE goal_id=? AND task_id=? ORDER BY created_at DESC',(goal['id'],step['task_id'])) if json.loads(row['data']).get('mode','work')==mode),{})
-            data={'mode':mode,'kind':goal.get('execution_settings',{}).get('roles',{}).get(step['role'],{}).get('kind',step['role']),'tokens':0,'model':goal.get('execution_settings',{}).get('roles',{}).get(step['role'],{}).get('model',''),'status':'running','role':step['role'],'adapter':'codex-exec','thread_id':old.get('thread_id',''),'event_count':0,'exit_code':None}
+            data={'mode':mode,'kind':goal.get('execution_settings',{}).get('roles',{}).get(step['role'],{}).get('kind',step['role']),'tokens':0,'model':goal.get('execution_settings',{}).get('roles',{}).get(step['role'],{}).get('model',''),'status':'running','role':step['role'],'adapter':goal.get('execution_settings',{}).get('runtime','codex-exec'),'thread_id':old.get('thread_id',''),'event_count':0,'exit_code':None}
             db.execute('INSERT INTO executions VALUES (?,?,?,?,?,?)',(key,goal['id'],step['task_id'],json.dumps(data),now,now))
         from .usage import Usage
         phase='question' if mode=='question' else 'revision' if goal.get('auto_rounds') or goal.get('repair_note') or (goal.get('pending_request') or {}).get('kind')=='revision' else 'retry' if old else 'initial'

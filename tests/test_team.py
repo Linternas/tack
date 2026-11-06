@@ -142,8 +142,11 @@ class TeamHttpTests(unittest.TestCase):
                 status,roles=request('GET','/api/team/catalog');self.assertEqual(status,200);self.assertEqual(len(roles['roles']),7);self.assertFalse(Team(store).exists())
                 status,settings=request('GET','/api/team/settings');self.assertEqual(status,200);self.assertEqual(settings['version'],0);self.assertFalse(Team(store).exists())
                 self.assertEqual(request('PATCH','/api/team/settings',settings,'https://evil.example')[0],403)
+                self.assertEqual(request('PATCH','/api/team/settings',settings)[0],403)
+                server.allow_execution=True
                 self.assertEqual(request('PATCH','/api/team/settings',settings)[1]['version'],1)
                 self.assertEqual(request('PATCH','/api/team/settings',settings)[0],409)
+                server.allow_execution=False
                 url='/api/goals/'+goal['id']
                 message={'version':goal['version'],'body':'Record decision','kind':'note','client_id':'note'}
                 self.assertEqual(request('POST',url+'/messages',message)[0],201)

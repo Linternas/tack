@@ -53,6 +53,12 @@ def command_reason(argv,p,automatic=False):
     return ''
 
 def job_reason(goal,job,current,workspace,automatic=False):
+    if goal.get('team_id'):
+        # Team constraints are attached by the workforce before execution/integration.
+        for paths in goal.get('team_path_limits',[goal['team_snapshot']['paths']]):
+            reason=file_reason(job['files'],{**current['permissions'],'write_paths':paths},workspace)
+            if reason:return '팀 범위: '+reason
+        if job['employee'] not in goal.get('team_members',goal['team_snapshot']['members']):return '팀에 배치되지 않은 직원입니다.'
     grant=effective(goal,current);policies=[grant['permissions'],current['permissions']]
     for p in policies:
         reason=file_reason(job['files'],p,workspace)

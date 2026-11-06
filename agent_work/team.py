@@ -12,7 +12,7 @@ from .execution_policy import MODES,DEFAULT_PERMISSIONS,mode,permissions
 
 ROLES=('plan','implement','verify')
 KINDS={'plan','implement','verify','assess'}
-DEFAULTS={'execution_mode':'manual','permissions':DEFAULT_PERMISSIONS,'max_parallel':3,'autopilot':False,'max_rounds':2,'max_minutes':30,'max_tokens':500000,
+DEFAULTS={'runtime':'codex-exec','execution_mode':'manual','permissions':DEFAULT_PERMISSIONS,'max_parallel':3,'autopilot':False,'max_rounds':2,'max_minutes':30,'max_tokens':500000,
           'roles':{'plan':{'name':'기획','model':'','instructions':''},'implement':{'name':'구현','model':'','instructions':'승인된 파일과 완료 조건 안에서 구현한다. 실제 변경과 수행한 검증, 미실행 검증을 구분해 전달한다.'},'verify':{'name':'검토','model':'','instructions':'완료 조건과 실제 코드·검증 근거를 대조한다. 결함은 영향과 재현·수정 조건으로 보고하고, 수행하지 않은 검증을 통과로 표시하지 않는다.'}}}
 
 class Team:
@@ -44,15 +44,16 @@ class Team:
             current=self.settings()
             selected=payload.get('execution_mode', 'approved' if payload.get('autopilot') else 'manual')
             if selected==current['execution_mode'] and type(payload.get('autopilot')) is bool and payload['autopilot']!=current['autopilot']:selected='approved' if payload['autopilot'] else 'manual'
-            payload={**payload,'execution_mode':selected,'permissions':payload.get('permissions',current['permissions'])}
+            payload={**payload,'execution_mode':selected,'permissions':payload.get('permissions',current['permissions']),'runtime':payload.get('runtime',current['runtime'])}
         if not isinstance(payload,dict) or set(payload)!=set(DEFAULTS)|{'version'}:raise BoardError('팀 설정 필드를 확인해주세요.')
         if type(payload['version']) is not int or type(payload['autopilot']) is not bool:raise BoardError('버전과 실행 모드를 확인해주세요.')
         if not isinstance(payload['execution_mode'],str) or payload['execution_mode'] not in MODES:raise BoardError('실행 모드는 manual, approved, autopilot 중 하나여야 합니다.')
         payload={**payload,'autopilot':payload['execution_mode']!='manual','permissions':permissions(payload['permissions'])}
         for name,low,high in [('max_parallel',1,8),('max_rounds',0,20),('max_minutes',1,120),('max_tokens',1000,2000000)]:
             if type(payload[name]) is not int or not low<=payload[name]<=high:raise BoardError(f'{name}: {low}~{high} 범위가 필요합니다.')
+        if not isinstance(payload['runtime'],str) or payload['runtime'] not in {'codex-exec','codex-app-server'}:raise BoardError('실행 연결은 codex-exec 또는 codex-app-server여야 합니다.')
         roles=payload['roles']
-        if not isinstance(roles,dict) or not 3<=len(roles)<=12 or 'plan' not in roles:raise BoardError('plan 역할을 포함해 3~12개 역할이 필요합니다.')
+        if not isinstance(roles,dict) or not 3<=len(roles)<=60 or 'plan' not in roles:raise BoardError('plan 직원을 포함해 3~60명 직원이 필요합니다.')
         if any(not isinstance(role,str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,39}',role) or role in {'user','tack'} for role in roles):raise BoardError('역할 ID는 영문 소문자로 시작하는 snake_case여야 합니다.')
         roles=self.roles(roles)
         names=[]

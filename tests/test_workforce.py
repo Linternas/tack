@@ -31,6 +31,31 @@ class WorkforceTests(unittest.TestCase):
     def approved(self):
         snap=self.run_team(self.propose);self.work.approve(self.goal['id'],snap['goal']['version'])
 
+    def decision(self):
+        return {'options':[{'id':'python','label':'Python 표준 라이브러리','description':'설치 없이 구현하고 unittest로 검증합니다.'},{'id':'node','label':'Node.js','description':'JavaScript 실행 환경을 사용합니다.'}],'recommended_id':'python','reason':'현재 저장소와 검증 환경이 Python입니다.'}
+    def test_user_question_persists_recommendation_and_explicit_choice_snapshot(self):
+        snap=self.run_team(lambda j:answer('ask',target='user',body='어떤 실행 환경으로 만들까요?',decision=self.decision()))
+        job=snap['jobs'][0];self.assertEqual(job['question_decision'],self.decision())
+        result=self.work.reply(self.goal['id'],job['id'],{'version':job['version'],'body':'음수도 지원해주세요.','option_id':'python'})
+        saved=result['jobs'][0];self.assertEqual(saved['status'],'queued');self.assertIsNone(saved['question_decision'])
+        reply=saved['replies'][-1];self.assertTrue(reply['selected_option']['recommended']);self.assertIn('Python 표준 라이브러리',reply['body']);self.assertIn('음수도 지원',reply['body'])
+        self.assertEqual(Workforce(self.store,self.root).job(self.goal['id'],job['id'])['replies'][-1],reply)
+        self.assertIn('Python 표준 라이브러리',self.work.user_decisions(self.goal['id'],saved)[0]['answer'])
+    def test_choice_requires_current_question_id_and_version_without_mutation(self):
+        snap=self.run_team(lambda j:answer('ask',target='user',body='선택해주세요',decision=self.decision()));job=self.work.job(self.goal['id'],snap['jobs'][0]['id'])
+        for payload in ({'version':job['version'],'body':'','option_id':'unknown'},{'version':job['version']-1,'body':'','option_id':'python'},{'version':job['version'],'body':''}):
+            with self.assertRaises(BoardError):self.work.reply(self.goal['id'],job['id'],payload)
+            self.assertEqual(self.work.job(self.goal['id'],job['id']),job)
+        saved=self.work.reply(self.goal['id'],job['id'],{'version':job['version'],'body':'','option_id':'node'})['jobs'][0]
+        self.assertFalse(saved['replies'][-1]['selected_option']['recommended'])
+    def test_custom_answer_without_selecting_recommendation_still_works(self):
+        snap=self.run_team(lambda j:answer('ask',target='user',body='선택해주세요',decision=self.decision()));job=snap['jobs'][0]
+        saved=self.work.reply(self.goal['id'],job['id'],{'version':job['version'],'body':'Rust로 만들겠습니다.'})['jobs'][0]
+        self.assertEqual(saved['replies'][-1]['body'],'Rust로 만들겠습니다.');self.assertNotIn('selected_option',saved['replies'][-1])
+    def test_invalid_recommendation_and_non_user_choices_are_rejected(self):
+        for decision in ({**self.decision(),'recommended_id':'missing'},{**self.decision(),'reason':''},{**self.decision(),'options':[self.decision()['options'][0]]},{**self.decision(),'options':[self.decision()['options'][0]]*2}):
+            with self.assertRaises(BoardError):validate_result(answer('ask',target='user',body='질문',decision=decision))
+        with self.assertRaises(BoardError):validate_result(answer('ask',target='implement',body='동료 질문',decision=self.decision()))
     def test_approval_questions_independent_review_and_user_completion(self):
         snap=self.run_team(lambda j:answer('ask',target='user',body='체크메이트 대신 왕 포획으로 할까요?'))
         job=snap['jobs'][0];self.assertEqual(snap['goal']['status'],'waiting_answer');self.assertEqual(job['status'],'waiting_user')
@@ -154,6 +179,7 @@ class WorkforceTests(unittest.TestCase):
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
             try:
                 self.assertEqual(request(server,'/team')[0],200)
+                for asset in ('office.js','office.css','office-scene.js','office-art.js'):self.assertEqual(request(server,'/'+asset)[0],200)
                 status,raw=request(server,'/api/workforce/'+self.goal['id']);self.assertEqual(status,200);self.assertEqual(json.loads(raw)['execution_enabled'],execution)
                 status,_=request(server,'/api/workforce/'+self.goal['id']+'/accept',{'version':self.goal['version']})
                 self.assertEqual(status,409 if execution else 403)

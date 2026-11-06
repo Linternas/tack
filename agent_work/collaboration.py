@@ -59,7 +59,7 @@ class Collaboration:
     def policy(self,db,key):return next((p for p in reversed(self.records(db,key,'policy')) if p['status']=='active'),None)
     def role_hash(self,role):return self.w.contract({'employee':role,'instructions':'','files':[]},self.w.team.settings()['roles'])
     def save_policy(self,key,payload):
-        self.ensure();goal=self.w.goal(key);settings=self.w.team.settings()
+        self.ensure();goal=self.w.goal(key);settings=self.w.scoped_settings(goal)
         require_keys(payload,{'version','mode','requirements','files_by_role','documents','verification','max_tokens','max_minutes','max_rounds','max_parallel','role_tokens'})
         self.w.idle_goal(key,payload['version'])
         if payload['mode'] not in ('manual','delegated'):raise BoardError('수동 또는 위임 모드를 선택해주세요.')
@@ -112,6 +112,10 @@ class Collaboration:
             if not self.exists(db):return ''
             p=self.policy(db,key)
         g=self.w.goal(key)
+        if g.get('team_id'):
+            from .organization import Organization
+            org=Organization(self.store,self.w.workspace)
+            if org.total_tokens(g['team_id'])>=org.constraints(g)['max_tokens']:return 'team_token_limit'
         if (not p or p['mode']!='delegated') and effective(g,self.w.team.settings())['execution_mode']!='autopilot':return ''
         with self.store.connect() as db:
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='usage_runs'").fetchone():
@@ -134,6 +138,12 @@ class Collaboration:
         with self.store.connect() as db:
             db.execute('BEGIN IMMEDIATE');self.w.lock_goal(db,key,worker=worker);job=self.job(db,key,item)
             if job['status']!='queued':raise BoardError('대기 중인 업무만 실행할 수 있습니다.',409)
+            from .team import Team
+            active=[]
+            for row in db.execute("SELECT j.data,g.data AS goal_data FROM team_jobs j JOIN goals g ON g.id=j.goal_id"):
+                other=json.loads(row['data']);owner=json.loads(row['goal_data'])
+                if other['status']=='working' and owner.get('worker') and owner.get('workspace')==self.w.workspace:active.append(other)
+            if len(active)>=Team(self.store,self.w.workspace).settings()['max_parallel'] or any(j['employee']==job['employee'] for j in active):return None
             attempt=identifier('ATTEMPT-');self.w.change(db,item,{'status':'working','attempt_id':attempt,'attempt_worker':worker},job['version'])
         return self.w.job(key,item)
     def check_attempt(self,key,item,attempt,worker,db=None,allow_wait=False):
@@ -145,7 +155,7 @@ class Collaboration:
     def request(self,key,item,payload,attempt,worker):
         self.ensure();require_keys(payload,{'to_role','title','instructions','acceptance','files','requirements','change_type','contract_path','expected_revision','wait_for','verification','idempotency_key'})
         from .workforce import paths
-        role=payload['to_role'];roles=self.w.team.settings()['roles'];goal=self.w.goal(key)
+        role=payload['to_role'];goal=self.w.goal(key);roles=self.w.scoped_settings(goal)['roles']
         if not isinstance(role,str) or role not in roles:raise BoardError('등록된 수신 역할이 필요합니다.')
         acceptance=strings(payload['acceptance'],'완료 조건')
         if not acceptance:raise BoardError('변경 요청의 완료 조건이 필요합니다.')
@@ -170,7 +180,7 @@ class Collaboration:
             if parent['depth']>=8 or len(parent['replies'])>=20:raise BoardError('협업 요청 한도입니다. 사용자 결정이 필요합니다.',409)
             p=self.policy(db,key);reason=self.policy_reason(p,goal,role,files,requirements,payload['change_type'])
             automatic=not p and effective(goal,self.w.team.settings())['execution_mode']=='autopilot' and payload['change_type'] in {'editorial','additive'} and set(requirements)<={goal['title'],goal['acceptance']} and bool(requirements)
-            if automatic:reason=job_reason(goal,{'files':files,'verification':verify},self.w.team.settings(),self.w.workspace,automatic=True)
+            if automatic:reason=job_reason(goal,{'employee':role,'files':files,'verification':verify},self.w.team.settings(),self.w.workspace,automatic=True)
             if p and (parent['employee'] not in p['role_hashes'] or p['role_hashes'][parent['employee']]!=self.role_hash(parent['employee'])):reason='요청한 역할이 위임 범위와 다릅니다.'
             if not verify:raise BoardError('변경 요청에는 실제 검증 명령이 필요합니다.')
             if p and verify!=p['verification']:reason='승인된 검증 명령과 다릅니다.'
@@ -327,7 +337,7 @@ class Collaboration:
                 if r['status']=='accepted' and job['status']=='done' and self.proof_current(job):
                     self.update(db,r['id'],{'status':'completed'});self.event(db,key,'implementation_verified',{'request_id':r['id'],'job_id':job['id']},r['id']+':implementation')
                     if r['wait_for']=='integration_verified' and not r.get('canonical_request_id'):
-                        role=next(k for k,v in self.w.team.settings()['roles'].items() if v['kind']=='verify')
+                        role=next(k for k,v in self.w.scoped_settings(goal)['roles'].items() if v['kind']=='verify')
                         parent=self.job(db,key,r['requester_task_id'])
                         check=self.w.insert(db,key,title='통합 검증: '+r['title'],employee=role,instructions='승인된 통합 검증 명령을 실행합니다.',files=list(dict.fromkeys(job['files']+parent['files'])),kind='integration',status='queued',parent=job['id'])
                         self.w.change(db,check,{'integration_request_id':r['id'],'verification':r['verification']})
