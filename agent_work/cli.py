@@ -10,7 +10,7 @@ from .store import BoardError, Store, CATEGORIES, STATUSES, TEXT_FIELDS
 
 
 def emit(value):
-    print(json.dumps(value,ensure_ascii=False,indent=2))
+    print(json.dumps(value,ensure_ascii=False,separators=(',',':')))
 
 
 def fields(value, keys):
@@ -24,6 +24,19 @@ def write_result(result, full, key='task'):
     if key == 'session':
         keys += ('task_id',)
     return {key: fields(result[key], keys)}
+
+
+def positive(value):
+    number=int(value)
+    if not 1<=number<=100:
+        raise argparse.ArgumentTypeError('1~100 사이의 개수가 필요합니다.')
+    return number
+
+
+def offset(value):
+    number=int(value)
+    if number<0:raise argparse.ArgumentTypeError('0 이상의 위치가 필요합니다.')
+    return number
 
 
 def choices(value, allowed):
@@ -61,16 +74,33 @@ def parser():
     status.add_argument('--status',type=lambda value: choices(value, STATUSES),help='쉼표로 구분한 상태')
     status.add_argument('--category',type=lambda value: choices(value, CATEGORIES),help='쉼표로 구분한 분류')
     status.add_argument('--search',help='ID·제목·작업 내용에서 대소문자 구분 없이 검색')
+    status.add_argument('--limit',type=positive,default=10)
+    status.add_argument('--offset',type=offset,default=0)
+    search=sub.add_parser('search',help='작업·결정·검증·체크포인트 검색')
+    search.add_argument('query');search.add_argument('--limit',type=positive,default=5)
+    search.add_argument('--status',type=lambda value: choices(value,STATUSES))
+    search.add_argument('--category',type=lambda value: choices(value,CATEGORIES))
+    from .records import KINDS
+    search.add_argument('--kind',choices=sorted(KINDS));search.add_argument('--all',action='store_true',help='보관 작업 포함')
+    search.add_argument('--all-projects',action='store_true',help='등록된 프로젝트 전체 검색')
+    index=sub.add_parser('index',help='기존 기록을 검색 구조로 이관·재색인')
+    index.add_argument('--rebuild',action='store_true');index.add_argument('--all-projects',action='store_true')
+    record=sub.add_parser('record').add_subparsers(dest='record_action',required=True)
+    record_add=record.add_parser('add');record_add.add_argument('task_id');record_add.add_argument('--kind',choices=['decision','verification','note'],required=True)
+    body=record_add.add_mutually_exclusive_group(required=True);body.add_argument('--text');body.add_argument('--file',type=Path)
+    record_list=record.add_parser('list');record_list.add_argument('task_id');record_list.add_argument('--kind',choices=sorted(KINDS));record_list.add_argument('--section')
+    record_list.add_argument('--limit',type=positive,default=5);record_list.add_argument('--offset',type=offset,default=0)
+    record_show=record.add_parser('show');record_show.add_argument('id');record_show.add_argument('--full',action='store_true')
     task=sub.add_parser('task').add_subparsers(dest='action',required=True)
     add=task.add_parser('add'); add.add_argument('title'); add.add_argument('--category',default='task'); add.add_argument('--json',dest='input')
-    show=task.add_parser('show'); show.add_argument('id')
+    show=task.add_parser('show'); show.add_argument('id');show.add_argument('--full',action='store_true');show.add_argument('--section')
     update=task.add_parser('update'); update.add_argument('id'); update.add_argument('--json',dest='input',required=True)
     start=task.add_parser('start'); start.add_argument('id'); start.add_argument('--version',required=True,type=int)
     check=sub.add_parser('checkpoint'); check.add_argument('task_id'); check.add_argument('--session'); check.add_argument('--json',dest='input',required=True)
     resume=sub.add_parser('resume'); resume.add_argument('task_id'); resume.add_argument('--session')
     for command in (add, update, start, check, resume):
         command.add_argument('--full',action='store_true',help='요약 대신 전체 결과 출력')
-    sessions=sub.add_parser('sessions'); sessions.add_argument('--all',action='store_true')
+    sessions=sub.add_parser('sessions'); sessions.add_argument('--all',action='store_true');sessions.add_argument('--full',action='store_true');sessions.add_argument('--limit',type=positive,default=10);sessions.add_argument('--offset',type=offset,default=0)
     document=sub.add_parser('document').add_subparsers(dest='document_action',required=True)
     document.add_parser('list')
     show_document=document.add_parser('show'); show_document.add_argument('key')
@@ -108,12 +138,33 @@ def run(args):
         data={'version':args.version}
         if args.project_action=='delete':data.update(confirmation=args.confirm,include_backups=args.include_backups)
         return emit(change(project,args.project_action,data))
+    if args.command in {'search','index'} and args.all_projects:
+        results=[];errors=[]
+        from .records import Records
+        for item in projects(getattr(args,'all',False)):
+            try:
+                if args.command=='index':
+                    if item.get('status')=='archived':
+                        results.append({'project':item['id'],'status':'readonly'});continue
+                    result=Records(Store(item['db_path'])).ensure(args.rebuild)
+                else:
+                    result=Records(Store(item['db_path'],readonly=True)).search(args.query,args.limit,args.status,args.category,args.kind,args.all)
+                results.append({'project':fields(item,('id','name')),**result})
+            except (BoardError,OSError,sqlite3.Error) as error:
+                errors.append({'project':item['id'],'error':str(error)})
+        if args.command=='index':
+            emit({'projects':results,'errors':errors})
+            if errors:raise BoardError('일부 프로젝트 색인에 실패했습니다. errors를 확인해주세요.',409)
+            return
+        matches=[{**m,'project':r['project']} for r in results for m in r['matches']]
+        matches.sort(key=lambda m:(sum(t.casefold() in m['title'].casefold() for t in args.query.split()),m['created_at']),reverse=True)
+        return emit({'query':args.query,'matches':matches[:args.limit],'has_more':len(matches)>args.limit or any(r['has_more'] for r in results),'errors':errors})
     project=by_id(args.project) if args.project else resolve(args.workspace,create=args.command in {'init','migrate'} or (args.command=='task' and args.action=='add') or (args.command=='goal' and args.goal_action in {'add','draft'}) or (args.command=='team' and args.team_action=='create'),
         local=getattr(args,'local',False),name=getattr(args,'name',None),link=getattr(args,'link',None),source_roots=getattr(args,'source_root',None))
     if args.command=='migrate':
         from .migration import migrate
         return emit(migrate(project,args.board,args.notes,args.active_note))
-    readonly=(args.command=='settings' and args.settings_action in {'show','catalog'}) or args.command in {'status','resume','sessions','doctor','usage'} or (args.command=='goal' and args.goal_action in {'list','show','messages'}) or (args.command=='team' and args.team_action in {'list','show'}) or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action=='show')
+    readonly=(args.command=='settings' and args.settings_action in {'show','catalog'}) or args.command in {'status','resume','sessions','doctor','usage','search'} or (args.command=='record' and args.record_action!='add') or (args.command=='goal' and args.goal_action in {'list','show','messages'}) or (args.command=='team' and args.team_action in {'list','show','collaboration'}) or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action=='show')
     from .project_lifecycle import read
     if not readonly and args.command!='dashboard' and read(project['db_path'])['status']=='archived':raise BoardError('보관 프로젝트는 읽기 전용입니다. project restore로 복원해주세요.',409)
     store=Store(project['db_path'],readonly=readonly)
@@ -139,8 +190,18 @@ def run(args):
         result=Usage(store).overview(args.goal,args.role)
         if not args.full:result.pop('runs')
         return emit(result)
+    from .records import Records, bounded
+    records=Records(store)
+    if args.command=='index':return emit(records.ensure(args.rebuild))
+    if args.command=='search':return emit({'project':fields(project,('id','name')),**records.search(args.query,args.limit,args.status,args.category,args.kind,args.all)})
+    if args.command=='record':
+        if args.record_action=='add':
+            text=args.text if args.text is not None else args.file.read_text()
+            return emit(records.add(args.task_id,args.kind,text))
+        if args.record_action=='list':return emit(records.list(args.task_id,args.kind,args.section,args.limit,args.offset))
+        return emit(records.show(args.id,args.full))
     if args.command=='status':
-        tasks=store.all()
+        tasks=store.all() if args.full or args.search else records.heads()
         if args.status:
             tasks=[t for t in tasks if t['status'] in args.status]
         elif not args.all:
@@ -161,9 +222,14 @@ def run(args):
                          'sessions':[fields(r,('id','task_id','status','branch','next_action','updated_at')) for r in sessions]})
         counts={status:sum(t['status']==status for t in tasks) for status in sorted({t['status'] for t in tasks})}
         return emit({'project':fields(project,('id','name','version')),'counts':counts,
-                     'tasks':[fields(t,task_keys) for t in tasks],'sessions':[fields(r,session_keys) for r in sessions]})
+                     'tasks':[fields(t,task_keys) for t in sorted(tasks,key=lambda t:(t['status']=='in_progress',t['updated_at']),reverse=True)[args.offset:args.offset+args.limit]],'sessions':[fields(r,session_keys) for r in sessions[:args.limit]],'total_tasks':len(tasks),'total_sessions':len(sessions),'limit':args.limit,'offset':args.offset,'has_more':args.offset+args.limit<len(tasks) or args.limit<len(sessions)})
     if args.command=='task':
-        if args.action=='show': return emit(store.detail(args.id))
+        if args.action=='show':
+            if args.section:
+                rows=records.list(args.id,section=args.section,limit=1)['records']
+                if not rows:raise BoardError('해당 본문 레코드가 없습니다.',404)
+                return emit(records.show(rows[0]['id'],args.full))
+            return emit(store.detail(args.id) if args.full else records.overview(args.id))
         if args.action=='add': return emit(write_result(store.write({'title':args.title,'category':args.category,**(payload(args.input) if args.input else {})}),args.full))
         if args.action=='update': return emit(write_result(store.write(payload(args.input),args.id),args.full))
         task=store.detail(args.id)['task']
@@ -179,11 +245,23 @@ def run(args):
         data['task_id']=args.task_id
         return emit(write_result(store.checkpoint(data,args.session),args.full,'session'))
     if args.command=='resume':
-        result=store.resume(args.task_id,args.session)
-        if not args.full:
-            result['dependencies']=[fields(t,('id','title','status','version','resolution','next_action','blocked_by')) for t in result['dependencies']]
+        if args.full:return emit(store.resume(args.task_id,args.session))
+        result=records.overview(args.task_id)
+        sessions=store.sessions()
+        if args.session:
+            selected=store.session(args.session)['session']
+            if selected['task_id']!=args.task_id:raise BoardError('작업에 연결되지 않은 세션입니다.')
+            sessions=[selected]
+        sessions=[r for r in sessions if r['task_id']==args.task_id]
+        result['sessions']=[{**fields(r,('id','task_id','version','status')), 'goal':bounded(r['goal'],240),'next_action':bounded(r['next_action'],480),'decisions':bounded(r['decisions'],480),'truncated_fields':[k for k,n in (('goal',240),('next_action',480),('decisions',480)) if len(r[k])>n]} for r in sessions[:3]]
+        result['total_sessions']=len(sessions)
+        heads={t['id']:t for t in records.heads()}
+        result['dependencies']=[fields(heads[key],('id','title','status','version')) for key in result['task']['blocked_by']]
         return emit(result)
-    if args.command=='sessions': return emit({'sessions':store.sessions(args.all)})
+    if args.command=='sessions':
+        sessions=store.sessions(args.all)
+        if args.full:return emit({'sessions':sessions})
+        return emit({'sessions':[{**fields(r,('id','task_id','status','version','updated_at')), 'goal':bounded(r['goal'],160),'next_action':bounded(r['next_action'],240),'truncated_fields':[k for k,n in (('goal',160),('next_action',240)) if len(r[k])>n]} for r in sessions[args.offset:args.offset+args.limit]],'total':len(sessions),'offset':args.offset,'has_more':args.offset+args.limit<len(sessions)})
     if args.command=='backup': return emit({'backup':str(store.backup())})
     if args.command=='dashboard':
         from .http import BoardServer

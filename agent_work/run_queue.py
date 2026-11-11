@@ -79,6 +79,8 @@ def recovered(db,key):
 
 
 def drain(store,workspace):
+    from .organization import Organization
+    if len(Organization(store,workspace).settings()['teams'])>1:return drain_teams(store,workspace)
     from .workforce import Workforce
     work=Workforce(store,workspace);ensure(store)
     folder=Path(workspace)/'.tack-orchestration';folder.mkdir(exist_ok=True)
@@ -134,3 +136,84 @@ def drain(store,workspace):
                 except Exception as error:
                     with store.connect() as db:db.execute("UPDATE team_run_queue SET status='needs_recheck',error=?,updated_at=? WHERE goal_id=? AND status='running'",(str(error)[:1000],timestamp(),key))
         finally:fcntl.flock(lock,fcntl.LOCK_UN)
+
+
+def drain_teams(store,workspace):
+    """One durable dispatcher, parallel disjoint teams, one active goal per team."""
+    from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
+    from .workforce import Workforce
+    from .organization import Organization
+    work=Workforce(store,workspace);org=Organization(store,workspace);ensure(store)
+    folder=Path(workspace)/'.tack-orchestration';folder.mkdir(exist_ok=True)
+    with (folder/'dispatch.lock').open('a+b') as lock:
+        while True:
+            try:
+                fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                with store.connect() as db:
+                    pending=db.execute("SELECT 1 FROM team_run_queue WHERE status='queued' AND workspace=?",(work.workspace,)).fetchone()
+                    owners=any(json.loads(row[0]).get('worker') and json.loads(row[0]).get('workspace')==work.workspace for row in db.execute('SELECT data FROM goals'))
+                if not pending or owners:return {'already_running':True}
+                time.sleep(.1)
+        def execute(key,version):
+            instance=Workforce(store,workspace)
+            try:
+                instance.run(key,version)
+                with store.connect() as db:db.execute("UPDATE team_run_queue SET status='finished',error='',updated_at=? WHERE goal_id=? AND status='running'",(timestamp(),key))
+                goal=instance.goal(key);jobs=instance.jobs(key);done={j['id'] for j in jobs if j['status']=='done'}
+                if any(j['status']=='queued' and set(j['depends_on'])<=done for j in jobs) and not goal.get('pause_requested') and goal['status'] not in {'done','paused','failed','needs_recheck'}:
+                    with store.connect() as db:
+                        db.execute('BEGIN IMMEDIATE');current=instance.lock_goal(db,key,goal['version'])
+                        if current.get('worker') or current.get('pause_requested'):return
+                        instance.set_goal(db,key,status='queued');version=db.execute('SELECT version FROM goals WHERE id=?',(key,)).fetchone()[0]
+                        sequence=db.execute('SELECT COALESCE(MAX(sequence),0)+1 FROM team_run_queue').fetchone()[0]
+                        db.execute("UPDATE team_run_queue SET goal_version=?,status='queued',sequence=?,updated_at=? WHERE goal_id=?",(version,sequence,timestamp(),key))
+            except Exception as error:
+                with store.connect() as db:db.execute("UPDATE team_run_queue SET status='needs_recheck',error=?,updated_at=? WHERE goal_id=? AND status='running'",(str(error)[:1000],timestamp(),key))
+        active={}
+        with ThreadPoolExecutor(max_workers=8,thread_name_prefix='tack-team') as pool:
+            while True:
+                with store.connect() as db:
+                    pending=[dict(r) for r in db.execute("SELECT * FROM team_run_queue WHERE status='queued' AND workspace=? ORDER BY sequence,goal_id",(work.workspace,))]
+                    owners=[work.orch.decode(r) for r in db.execute('SELECT * FROM goals') if json.loads(r['data']).get('worker') and json.loads(r['data']).get('workspace')==work.workspace]
+                    for row in db.execute("SELECT goal_id FROM team_run_queue WHERE status='running' AND workspace=?",(work.workspace,)).fetchall():
+                        if row[0] not in active and not any(g['id']==row[0] for g in owners):db.execute("UPDATE team_run_queue SET status='needs_recheck',error='이전 실행 종료를 확인하고 재요청해주세요.',updated_at=? WHERE goal_id=?",(timestamp(),row[0]))
+                if any(time.time()-g.get('heartbeat',0)>30 for g in owners):
+                    if not active:return {'waiting_recovery':True}
+                    pending=[]
+                claimed=[work.goal(key) for key in active]
+                capacity=work.team.settings()['max_parallel']
+                waiting_teams=set()
+                for request in pending:
+                    if len(active)>=capacity:break
+                    goal=work.goal(request['goal_id'])
+                    team_id=goal.get('team_id') or 'default'
+                    if team_id in waiting_teams:continue
+                    if goal['version']!=request['goal_version']:
+                        with store.connect() as db:db.execute("UPDATE team_run_queue SET status='needs_recheck',error='대기 중 목표가 변경됐습니다.',updated_at=? WHERE goal_id=? AND status='queued' AND goal_version=?",(timestamp(),goal['id'],request['goal_version']))
+                        continue
+                    if goal.get('worker') or any(not org.parallel(goal,other) for other in [*owners,*claimed] if other['id']!=goal['id']):
+                        waiting_teams.add(team_id)
+                        continue
+                    with store.connect() as db:
+                        db.execute('BEGIN IMMEDIATE')
+                        queued=db.execute("SELECT goal_version FROM team_run_queue WHERE goal_id=? AND status='queued'",(goal['id'],)).fetchone()
+                        current=db.execute('SELECT version,data FROM goals WHERE id=?',(goal['id'],)).fetchone()
+                        if not queued or queued['goal_version']!=request['goal_version']:continue
+                        if not current or current['version']!=queued['goal_version']:
+                            db.execute("UPDATE team_run_queue SET status='needs_recheck',error='대기 중 목표가 변경됐습니다.',updated_at=? WHERE goal_id=? AND status='queued'",(timestamp(),goal['id']))
+                            continue
+                        if json.loads(current['data']).get('worker'):
+                            waiting_teams.add(team_id)
+                            continue
+                        updated=db.execute("UPDATE team_run_queue SET status='running',updated_at=? WHERE goal_id=? AND status='queued'",(timestamp(),goal['id'])).rowcount
+                    if updated:active[goal['id']]=pool.submit(execute,goal['id'],request['goal_version']);claimed.append(goal)
+                finished=[key for key,future in active.items() if future.done()]
+                for key in finished:active.pop(key).result()
+                # A completed future may have queued its next round after our snapshot.
+                if finished:continue
+                if not active:
+                    if pending and owners:time.sleep(.2);continue
+                    return {'drained':True}
+                wait(active.values(),timeout=.15,return_when=FIRST_COMPLETED)

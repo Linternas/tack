@@ -161,4 +161,27 @@ class UpdateTests(unittest.TestCase):
         self.assertFalse((core/'agent_work/workforce.py').exists())
         self.assertTrue((core/'agent_work/usage.py').exists())
 
+
+    def test_update_refreshes_stock_policy_and_preserves_user_instructions(self):
+        agents=self.home/'.codex/AGENTS.md'
+        agents.write_text('# My rules\n'+agents.read_text()+'\n## Custom\nKeep this.\n')
+        policy=self.source/'templates/work-policy.md';policy.write_text(policy.read_text()+'\n- Added retrieval rule.\n')
+        skill=self.source/'templates/handoff-state.md';skill.write_text(skill.read_text()+'\nUpdated checkpoint guidance.\n')
+        before_config=(self.home/'.codex/config.toml').read_bytes()
+        result=self.run_update()
+        self.assertIn('Added retrieval rule.',agents.read_text())
+        self.assertTrue(agents.read_text().startswith('# My rules\n'))
+        self.assertIn('## Custom\nKeep this.',agents.read_text())
+        self.assertIn('Updated checkpoint guidance.',(self.home/'.codex/skills/handoff-state/SKILL.md').read_text())
+        self.assertEqual(before_config,(self.home/'.codex/config.toml').read_bytes())
+        self.assertTrue(result['instructions'])
+
+    def test_update_preserves_custom_managed_block_and_skill(self):
+        agents=self.home/'.codex/AGENTS.md';agents.write_text(agents.read_text().replace('## Unified task and session records','## My custom task rules'))
+        skill=self.home/'.codex/skills/handoff-state/SKILL.md';skill.write_text('My custom skill')
+        before=(agents.read_bytes(),skill.read_bytes())
+        result=self.run_update()
+        self.assertEqual(before,(agents.read_bytes(),skill.read_bytes()))
+        self.assertTrue(any(r['status']=='preserved_custom' for r in result['instructions']))
+
 if __name__=='__main__':unittest.main()

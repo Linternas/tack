@@ -185,5 +185,76 @@ class HttpTests(unittest.TestCase):
             self.assertEqual(self.request("GET", path)[0], 404)
 
 
+class OrganizationHttpBoundaryTests(unittest.TestCase):
+    request = HttpTests.request
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.folder = Path(self.directory.name).resolve()
+        harness = self.folder / '.tack-orchestration'
+        harness.mkdir()
+        (harness / 'install.json').write_text(json.dumps({'format': 1, 'workspace': str(self.folder)}))
+        self.store = Store(self.folder / 'http.sqlite3')
+        project = {'id': 'test', 'name': 'Test', 'workspace': str(self.folder), 'source_roots': []}
+        self.server = BoardServer(('127.0.0.1', 0), self.store, project, harness=True)
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    def tearDown(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join()
+        self.directory.cleanup()
+
+    def schema(self):
+        with self.store.connect() as db:
+            return [tuple(row) for row in db.execute('SELECT type, name, sql FROM sqlite_master ORDER BY type, name')]
+
+    def test_core_rejects_organization_demo_api_and_assets(self):
+        self.server.harness = False
+        before = self.schema()
+        for path in ('/api/organization', '/api/demo-days', '/api/workforce',
+                     '/organization.js', '/office.js', '/office.css', '/office-demo-stage.png',
+                     '/office-art.js', '/office-scene.js', '/office-atlas.png', '/office-room.png',
+                     '/office-avatar-0.png', '/office-avatar-11.png'):
+            with self.subTest(path=path):
+                self.assertEqual(self.request('GET', path)[0], 404)
+        for path in ('/api/organization/teams', '/api/organization/teams/default',
+                     '/api/demo-days', '/api/demo-days/DEMO-TEST/respond'):
+            with self.subTest(path=path):
+                self.assertEqual(self.request('POST', path, {})[0], 404)
+        self.assertEqual(self.schema(), before)
+
+    def test_read_only_harness_reads_empty_state_and_rejects_mutations_without_migration(self):
+        before = self.schema()
+        status, body, _ = self.request('GET', '/api/organization')
+        self.assertEqual(status, 200)
+        organization = json.loads(body)
+        self.assertEqual(organization['version'], 0)
+        self.assertEqual(list(organization['teams']), ['default'])
+        status, body, _ = self.request('GET', '/api/demo-days')
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {'demos': []})
+        for path in ('/api/workforce', '/api/workforce?team=default'):
+            with self.subTest(path=path):
+                status, body, _ = self.request('GET', path)
+                self.assertEqual(status, 200)
+                office = json.loads(body)
+                self.assertEqual(office['goals'], [])
+                self.assertEqual(office['office']['jobs'], [])
+                self.assertFalse(office['execution_enabled'])
+        self.assertEqual(self.request('GET', '/api/workforce?team=TEAM-MISSING')[0], 400)
+        for path in ('/api/organization/teams', '/api/organization/teams/default',
+                     '/api/demo-days', '/api/demo-days/DEMO-TEST/respond'):
+            with self.subTest(path=path):
+                status, body, _ = self.request('POST', path, {})
+                self.assertEqual(status, 403)
+                self.assertIn('error', json.loads(body))
+        for path in ('/organization.js', '/office-demo-stage.png'):
+            with self.subTest(path=path):
+                self.assertEqual(self.request('GET', path)[0], 200)
+        self.assertEqual(self.schema(), before)
+
+
 if __name__ == "__main__":
     unittest.main()

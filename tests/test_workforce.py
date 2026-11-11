@@ -31,6 +31,31 @@ class WorkforceTests(unittest.TestCase):
     def approved(self):
         snap=self.run_team(self.propose);self.work.approve(self.goal['id'],snap['goal']['version'])
 
+    def decision(self):
+        return {'options':[{'id':'python','label':'Python 표준 라이브러리','description':'설치 없이 구현하고 unittest로 검증합니다.'},{'id':'node','label':'Node.js','description':'JavaScript 실행 환경을 사용합니다.'}],'recommended_id':'python','reason':'현재 저장소와 검증 환경이 Python입니다.'}
+    def test_user_question_persists_recommendation_and_explicit_choice_snapshot(self):
+        snap=self.run_team(lambda j:answer('ask',target='user',body='어떤 실행 환경으로 만들까요?',decision=self.decision()))
+        job=snap['jobs'][0];self.assertEqual(job['question_decision'],self.decision())
+        result=self.work.reply(self.goal['id'],job['id'],{'version':job['version'],'body':'음수도 지원해주세요.','option_id':'python'})
+        saved=result['jobs'][0];self.assertEqual(saved['status'],'queued');self.assertIsNone(saved['question_decision'])
+        reply=saved['replies'][-1];self.assertTrue(reply['selected_option']['recommended']);self.assertIn('Python 표준 라이브러리',reply['body']);self.assertIn('음수도 지원',reply['body'])
+        self.assertEqual(Workforce(self.store,self.root).job(self.goal['id'],job['id'])['replies'][-1],reply)
+        self.assertIn('Python 표준 라이브러리',self.work.user_decisions(self.goal['id'],saved)[0]['answer'])
+    def test_choice_requires_current_question_id_and_version_without_mutation(self):
+        snap=self.run_team(lambda j:answer('ask',target='user',body='선택해주세요',decision=self.decision()));job=self.work.job(self.goal['id'],snap['jobs'][0]['id'])
+        for payload in ({'version':job['version'],'body':'','option_id':'unknown'},{'version':job['version']-1,'body':'','option_id':'python'},{'version':job['version'],'body':''}):
+            with self.assertRaises(BoardError):self.work.reply(self.goal['id'],job['id'],payload)
+            self.assertEqual(self.work.job(self.goal['id'],job['id']),job)
+        saved=self.work.reply(self.goal['id'],job['id'],{'version':job['version'],'body':'','option_id':'node'})['jobs'][0]
+        self.assertFalse(saved['replies'][-1]['selected_option']['recommended'])
+    def test_custom_answer_without_selecting_recommendation_still_works(self):
+        snap=self.run_team(lambda j:answer('ask',target='user',body='선택해주세요',decision=self.decision()));job=snap['jobs'][0]
+        saved=self.work.reply(self.goal['id'],job['id'],{'version':job['version'],'body':'Rust로 만들겠습니다.'})['jobs'][0]
+        self.assertEqual(saved['replies'][-1]['body'],'Rust로 만들겠습니다.');self.assertNotIn('selected_option',saved['replies'][-1])
+    def test_invalid_recommendation_and_non_user_choices_are_rejected(self):
+        for decision in ({**self.decision(),'recommended_id':'missing'},{**self.decision(),'reason':''},{**self.decision(),'options':[self.decision()['options'][0]]},{**self.decision(),'options':[self.decision()['options'][0]]*2}):
+            with self.assertRaises(BoardError):validate_result(answer('ask',target='user',body='질문',decision=decision))
+        with self.assertRaises(BoardError):validate_result(answer('ask',target='implement',body='동료 질문',decision=self.decision()))
     def test_approval_questions_independent_review_and_user_completion(self):
         snap=self.run_team(lambda j:answer('ask',target='user',body='체크메이트 대신 왕 포획으로 할까요?'))
         job=snap['jobs'][0];self.assertEqual(snap['goal']['status'],'waiting_answer');self.assertEqual(job['status'],'waiting_user')
@@ -66,7 +91,8 @@ class WorkforceTests(unittest.TestCase):
         settings=self.work.team.settings();settings['autopilot']=True;settings['max_rounds']=1;self.work.team.save(settings)
         self.work.approve(self.goal['id'],snap['goal']['version'])
         snap=self.run_team(result)
-        self.assertEqual(snap['goal']['status'],'awaiting_approval');self.assertLessEqual(reviews,3)
+        self.assertEqual(snap['goal']['status'],'waiting_answer');self.assertLessEqual(reviews,3)
+        repeated=next(j for j in snap['jobs'] if j['kind']=='task');self.assertEqual(repeated['status'],'waiting_user');self.assertIn('진전',repeated['question'])
 
     def test_current_role_configuration_invalidates_approval(self):
         self.approved();settings=self.work.team.settings();settings['roles']['implement']['instructions']='새 지침';self.work.team.save(settings)
@@ -153,6 +179,7 @@ class WorkforceTests(unittest.TestCase):
             thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
             try:
                 self.assertEqual(request(server,'/team')[0],200)
+                for asset in ('office.js','office.css','office-scene.js','office-art.js'):self.assertEqual(request(server,'/'+asset)[0],200)
                 status,raw=request(server,'/api/workforce/'+self.goal['id']);self.assertEqual(status,200);self.assertEqual(json.loads(raw)['execution_enabled'],execution)
                 status,_=request(server,'/api/workforce/'+self.goal['id']+'/accept',{'version':self.goal['version']})
                 self.assertEqual(status,409 if execution else 403)
@@ -232,3 +259,82 @@ class WorkforceTests(unittest.TestCase):
             self.assertNotIn('resume',argv)
             return {'status':'succeeded','exit_code':0,'team_result':answer()}
         with patch.object(self.work.orch,'process',side_effect=fresh):self.work.employee_run(self.work.goal(g['id']),public,'owner')
+
+    def test_answered_question_is_retried_once_then_paused_without_asking_user_again(self):
+        question='어떤 언어를 사용하나요?'
+        snap=self.run_team(lambda j:answer('ask',target='user',body=question))
+        job=snap['jobs'][0]
+        self.work.reply(self.goal['id'],job['id'],{'version':job['version'],'body':'Python 표준 라이브러리로 해주세요.'})
+        calls=[]
+        def repeated(job):
+            calls.append(job['id'])
+            return answer('ask',target='user',body='  어떤   언어를 사용하나요?  ')
+        snap=self.run_team(repeated)
+        self.assertEqual(len(calls),2)
+        self.assertEqual(snap['goal']['status'],'paused')
+        self.assertEqual(next(e for e in snap['employees'] if e['id']=='plan')['state'],'paused')
+        job=snap['jobs'][0];self.assertEqual(job['status'],'paused');self.assertEqual(job['question'],'')
+        self.assertIn('자동 재시도를 중단',job['result'])
+        self.assertEqual(len([m for m in snap['messages'] if m['kind']=='question' and m['target']=='user']),1)
+        self.assertNotEqual(self.store.detail(self.goal['task_id'])['task']['status'],'done')
+
+    def test_repeat_correction_can_propose_small_work_but_cannot_skip_scope_approval(self):
+        snap=self.run_team(lambda j:answer('ask',target='user',body='어떤 언어인가요?'))
+        job=snap['jobs'][0];self.work.reply(self.goal['id'],job['id'],{'version':job['version'],'body':'Python'})
+        def proceed(job):
+            if not job.get('answered_question_retries'):return answer('ask',target='user',body='어떤 언어인가요?')
+            return self.propose(job)
+        snap=self.run_team(proceed)
+        self.assertEqual(snap['goal']['status'],'awaiting_approval')
+        self.assertEqual(next(j for j in snap['jobs'] if j['kind']=='task')['status'],'awaiting_approval')
+        self.assertFalse((self.root/'engine.py').exists())
+
+    def test_new_material_blocker_is_not_suppressed_after_answer(self):
+        snap=self.run_team(lambda j:answer('ask',target='user',body='핵심 승리 조건은?'))
+        job=snap['jobs'][0];self.work.reply(self.goal['id'],job['id'],{'version':job['version'],'body':'왕 포획'})
+        snap=self.run_team(lambda j:answer('ask',target='user',body='기존 사용자 데이터를 삭제해야 하는데 승인하시나요?'))
+        self.assertEqual(snap['jobs'][0]['status'],'waiting_user')
+        self.assertEqual(snap['jobs'][0].get('answered_question_retries',0),0)
+
+    def test_goal_answers_survive_reload_and_do_not_leak_goals_or_private_channels(self):
+        seed=self.work.jobs(self.goal['id'])[0]
+        with self.store.connect() as db:
+            self.work.change(db,seed['id'],{'replies':[{'from':'user','question':'공개 언어 선택?','body':'Python'}]})
+            private=self.work.insert(db,self.goal['id'],title='개인 질문',employee='implement',instructions='개인 질문',kind='question',channel='dm:implement')
+            self.work.change(db,private,{'replies':[{'from':'user','question':'개인 결정?','body':'개인 답변'}]})
+            public=self.work.insert(db,self.goal['id'],title='공개 질문',employee='implement',instructions='공개 질문',kind='question')
+        loaded=Workforce(self.store,self.root)
+        public_context=loaded.user_decisions(self.goal['id'],loaded.job(self.goal['id'],public))
+        private_context=loaded.user_decisions(self.goal['id'],loaded.job(self.goal['id'],private))
+        self.assertEqual([d['answer'] for d in public_context],['Python'])
+        self.assertEqual([d['answer'] for d in private_context],['Python','개인 답변'])
+        self.assertEqual([d['answer'] for d in loaded.user_decisions(self.goal['id'],seed)],['Python'])
+        other=loaded.create('다른 계산기')
+        self.assertEqual(loaded.user_decisions(other['id'],loaded.jobs(other['id'])[0]),[])
+
+    def test_existing_goals_receive_clarification_policy_and_public_answers_in_execution_prompt(self):
+        seed=self.work.jobs(self.goal['id'])[0]
+        with self.store.connect() as db:
+            self.work.change(db,seed['id'],{'instructions':'legacy planner instruction','replies':[{'from':'user','question':'어떤 언어?','body':'Python 표준 라이브러리'}]})
+            implementation=self.work.insert(db,self.goal['id'],title='계산기 구현',employee='implement',instructions='계산기 구현과 테스트',files=['calculator.py'])
+        policy=self.work.team.settings();goal=self.work.orch.update(self.goal['id'],{'worker':'owner','execution_settings':policy},self.work.goal(self.goal['id'])['version'])
+        prompts=[]
+        def capture(argv,cwd,key,worker,run_id,prompt):
+            prompts.append(prompt)
+            return {'status':'succeeded','exit_code':0,'team_result':answer()}
+        with patch.object(self.work.orch,'process',side_effect=capture):
+            self.work.employee_run(goal,self.work.job(goal['id'],seed['id']),'owner')
+            self.work.employee_run(goal,self.work.job(goal['id'],implementation),'owner')
+        for prompt in prompts:
+            self.assertIn('Clarification policy:',prompt)
+            self.assertIn('Python 표준 라이브러리',prompt)
+            self.assertIn('Batch currently known blockers',prompt)
+            self.assertIn('one implementation job',prompt)
+            self.assertIn('never infer required consent from silence',prompt)
+            self.assertIn('Scope approval, sandbox rules and final acceptance still apply',prompt)
+        self.assertIn('legacy planner instruction',prompts[0])
+
+    def test_conflicting_user_answers_are_preserved_instead_of_silently_overwritten(self):
+        job=self.work.jobs(self.goal['id'])[0]
+        with self.store.connect() as db:self.work.change(db,job['id'],{'replies':[{'from':'user','question':'언어?','body':'Python'},{'from':'user','question':'언어?','body':'JavaScript'}]})
+        self.assertEqual([d['answer'] for d in self.work.user_decisions(self.goal['id'],job)],['Python','JavaScript'])

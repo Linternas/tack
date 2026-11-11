@@ -131,6 +131,8 @@ class Workspaces:
         if outside or not write and changes:
             raise BoardError('승인 파일 밖 수정은 통합하지 않았습니다: '+', '.join(sorted(outside or changes)[:12]),409)
         if any(value['after'] and value['after']['kind']!='file' for value in changes.values()):raise BoardError('심볼릭 링크·디렉터리 산출물은 통합할 수 없습니다.')
+        for rel,value in changes.items():
+            if value['after'] and state(Path(record['artifact'])/'after'/rel)!=value['after']:raise BoardError('보존 산출물의 해시가 변경됐습니다. 통합을 중단합니다.',409)
         with self.lock():
             conflicts=[rel for rel,value in changes.items() if state(self.root/rel)!=value['before']]
             conflicts.extend(rel for rel in approved if state(self.root/rel)!=attempt['baseline'].get(rel))

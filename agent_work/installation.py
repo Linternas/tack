@@ -11,8 +11,8 @@ import sys
 import tempfile
 from .store import BoardError
 
-EXTENSION_MODULES={'harness.py','harness_cli.py','orchestration.py','orchestration_cli.py','team.py','crewset.py','usage_adapter.py','workforce.py','workspaces.py','scheduler.py','run_queue.py'}
-EXTENSION_ASSETS={'goals.html','goals.js','goals.css','plan.schema.json','verdict.schema.json','brief.schema.json','crewset.roles.json','crewset.LICENSE','employee.schema.json','workforce.html','workforce.js','workforce.css'}
+EXTENSION_MODULES={'session_office.py','organization.py','demo_day.py','harness.py','harness_cli.py','orchestration.py','orchestration_cli.py','team.py','crewset.py','usage_adapter.py','workforce.py','workspaces.py','scheduler.py','run_queue.py','collaboration.py','execution_policy.py','codex_app_server.py'}
+EXTENSION_ASSETS={'session-office.js','office-demo-stage.png','organization.js','office-atlas.png','office-avatar-0.png','office-avatar-1.png','office-avatar-3.png','office-avatar-2.png','office-avatar-6.png','office-avatar-7.png','office-avatar-5.png','office-avatar-4.png','office-avatar-9.png','office-avatar-8.png','office-room.png','office-avatar-11.png','office-avatar-10.png','office-art.js','office-scene.js','office.js','office.css','ai-office.LICENSE','goals.html','goals.js','goals.css','plan.schema.json','verdict.schema.json','brief.schema.json','crewset.roles.json','crewset.LICENSE','employee.schema.json','workforce.html','workforce.js','workforce.css'}
 LEGACY_SKILL_SHA256='db2ba8d5a8b5b196bd3e126528f6d14a0a18855a01343b1c25c1cce8bb69663f'
 
 def package_version(source):

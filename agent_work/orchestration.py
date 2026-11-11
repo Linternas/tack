@@ -216,7 +216,8 @@ class Orchestrator(Tracker):
                 for other in db.execute('SELECT id,data FROM goals WHERE id<>?',(key,)):
                     state=json.loads(other['data'])
                     if state.get('worker') and state.get('workspace')==current['workspace']:
-                        raise BoardError('같은 checkout에 실행 소유자가 있습니다.',409)
+                        from .organization import Organization
+                        if not Organization(self.store,current['workspace']).parallel(current,state):raise BoardError('같은 checkout의 팀/경로에 실행 소유자가 있습니다.',409)
             current.update(change)
             db.execute('UPDATE goals SET data=?,version=version+?,updated_at=? WHERE id=?',(json.dumps(current,ensure_ascii=False),0 if set(change)=={'heartbeat'} else 1,timestamp(),key))
         return self.goal(key)
@@ -246,7 +247,7 @@ class Orchestrator(Tracker):
         key=identifier('EXEC-');now=timestamp()
         with self.store.connect() as db:
             old=next((json.loads(row['data']) for row in db.execute('SELECT data FROM executions WHERE goal_id=? AND task_id=? ORDER BY created_at DESC',(goal['id'],step['task_id'])) if json.loads(row['data']).get('mode','work')==mode),{})
-            data={'mode':mode,'kind':goal.get('execution_settings',{}).get('roles',{}).get(step['role'],{}).get('kind',step['role']),'tokens':0,'model':goal.get('execution_settings',{}).get('roles',{}).get(step['role'],{}).get('model',''),'status':'running','role':step['role'],'adapter':'codex-exec','thread_id':old.get('thread_id',''),'event_count':0,'exit_code':None}
+            data={'mode':mode,'kind':goal.get('execution_settings',{}).get('roles',{}).get(step['role'],{}).get('kind',step['role']),'tokens':0,'model':goal.get('execution_settings',{}).get('roles',{}).get(step['role'],{}).get('model',''),'status':'running','role':step['role'],'adapter':goal.get('execution_settings',{}).get('runtime','codex-exec'),'thread_id':old.get('thread_id',''),'event_count':0,'exit_code':None}
             db.execute('INSERT INTO executions VALUES (?,?,?,?,?,?)',(key,goal['id'],step['task_id'],json.dumps(data),now,now))
         from .usage import Usage
         phase='question' if mode=='question' else 'revision' if goal.get('auto_rounds') or goal.get('repair_note') or (goal.get('pending_request') or {}).get('kind')=='revision' else 'retry' if old else 'initial'
@@ -466,6 +467,13 @@ class Orchestrator(Tracker):
     def process(self,argv,cwd,goal_id,worker,run_id=None,prompt=None):
         # Only this worker's process group is ever signalled; never kill a PID from saved state.
         verdict_required=False
+        if not run_id and self.goal(goal_id).get('mode')=='team':
+            from .execution_policy import effective,command_reason
+            from .team import Team
+            current=Team(self.store,self.workspace).settings()
+            for permissions in (effective(self.goal(goal_id),current)['permissions'],current['permissions']):
+                reason=command_reason(argv,permissions)
+                if reason:raise BoardError(reason,403)
         if run_id:
             with self.store.connect() as db:
                 row=db.execute('SELECT data,task_id FROM executions WHERE id=?',(run_id,)).fetchone()
@@ -507,6 +515,10 @@ class Orchestrator(Tracker):
                     state=self.goal(goal_id)
                     self.update(goal_id,{'heartbeat':time.time()},worker=worker);last=time.monotonic()
                     limit=self.budget_reason(state)
+                    if state.get('mode')=='team':
+                        from .collaboration import Collaboration
+                        from .workforce import Workforce
+                        limit=limit or Collaboration(Workforce(self.store,self.workspace)).budget(goal_id,role if run_id else None)
                     # A completed response may cross the token cap; stop before the next role without losing its result.
                     if limit=='token_limit' and completed:limit=''
                     if (state['pause_requested'] or limit) and not interrupted:

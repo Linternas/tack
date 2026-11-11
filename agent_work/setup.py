@@ -13,7 +13,7 @@ import tomllib
 BEGIN = '<!-- tack:begin -->'
 END = '<!-- tack:end -->'
 LEGACY_SKILL_SHA256 = '3237b617c3d5e84221ba32e7139b130b8f98b143fc09a9f24a9a117982bd0d8f'
-LEGACY_SKILL_HASHES = {LEGACY_SKILL_SHA256, 'dc48eea68390a248cee2ddbaedb66b06f89db7016284662e45fecd723f4a1214'}
+LEGACY_SKILL_HASHES = {'d8f9219ff5882cdacd1c650b9f185d2513dee88e102fd1d7ff2a9d5d54492c0d', LEGACY_SKILL_SHA256, 'dc48eea68390a248cee2ddbaedb66b06f89db7016284662e45fecd723f4a1214'}
 
 
 def block(original, content):
@@ -82,9 +82,7 @@ def replace(path, content, backups):
         Path(temporary).unlink(missing_ok=True)
 
 
-def setup(source, home, environ):
-    source, home = Path(source), Path(home)
-    data = Path(environ.get('AGENT_WORK_HOME', str(home / '.local/share/agent-work'))).expanduser().resolve()
+def codex_homes(home, environ):
     primary = Path(environ.get('CODEX_HOME', str(home / '.codex'))).expanduser()
     homes = {home / '.codex', primary}
     company = home / '.codex-company'
@@ -92,6 +90,13 @@ def setup(source, home, environ):
         homes.add(company)
     homes.update((home / 'Library/Application Support/orca/codex-accounts').glob('*/home'))
     homes = sorted({p.resolve() for p in homes})
+    return homes
+
+
+def setup(source, home, environ):
+    source, home = Path(source), Path(home)
+    data = Path(environ.get('AGENT_WORK_HOME', str(home / '.local/share/agent-work'))).expanduser().resolve()
+    homes = codex_homes(home, environ)
     plan = []
     for codex in homes:
         config = codex / 'config.toml'
@@ -148,7 +153,7 @@ def setup(source, home, environ):
         replace(legacy, command, backups)
         legacy.chmod(0o755)
     version=package_version(source)
-    replace(home/'.local/lib/tack/install.json',json.dumps({'format':1,'version':version,'runtime':str(runtime)},indent=2)+'\n',backups)
+    replace(home/'.local/lib/tack/install.json',json.dumps({'format':1,'version':version,'runtime':str(runtime),'policy_sha256':hashlib.sha256((source/'templates/work-policy.md').read_text().strip().encode()).hexdigest(),'handoff_state_sha256':hashlib.sha256((source/'templates/handoff-state.md').read_bytes()).hexdigest()},indent=2)+'\n',backups)
     return {'version':version,'launcher': str(launcher), 'runtime': str(runtime), 'data': str(data),
             'legacy_launcher': str(legacy) if keep_legacy else None,
             'codex_homes': [str(p) for p in homes], 'backups': backups,

@@ -105,7 +105,7 @@ class SetupTests(unittest.TestCase):
 
     def test_legacy_install_upgrade_retains_database_and_unrelated_rules(self):
         # The previous release's stock skill is accepted, custom skills still fail.
-        skill = (SOURCE / 'templates/handoff-state.md').read_text().replace('Tack', 'Agent Work').replace('`tack', '`work').replace('tack CLI', 'work CLI')
+        skill = (SOURCE / 'tests/fixtures/legacy-handoff-state.md').read_text()
         import hashlib
         from agent_work.setup import LEGACY_SKILL_SHA256
         self.assertEqual(hashlib.sha256(skill.encode()).hexdigest(), LEGACY_SKILL_SHA256)
@@ -117,7 +117,7 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(target.read_text(), (SOURCE / 'templates/handoff-state.md').read_text())
         self.assertIn('Keep my policy.', agents.read_text())
         self.assertIn('Keep this too.', agents.read_text())
-        self.assertIn('`tack` CLI', agents.read_text())
+        self.assertIn('`tack search', agents.read_text())
         self.assertNotIn('`work` CLI', agents.read_text())
         self.assertEqual(result['data'], str(self.home / '.local/share/agent-work'))
 

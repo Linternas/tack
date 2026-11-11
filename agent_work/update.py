@@ -115,6 +115,29 @@ def _harness(source,entry,data):
         activate(changes,backups)
         return {'workspace':str(root),'version':updated['version'],'runtime':str(new_runtime),'status':'updated' if changed else 'current','skill':'preserved_custom' if custom else 'managed','backups':backups}
 
+def managed_instructions(source, home, environ, installed):
+    from .setup import block, codex_homes, LEGACY_SKILL_HASHES, BEGIN, END
+    policy=(source/'templates/work-policy.md').read_text()
+    skill=(source/'templates/handoff-state.md').read_text()
+    known_policies={'9898a6e5b6d13b1bc69f62c7cde6e407f813d6c59bdcb2786ea002ccfbe34177',installed.get('policy_sha256'),hashlib.sha256(policy.strip().encode()).hexdigest()}
+    known_skills=LEGACY_SKILL_HASHES | {installed.get('handoff_state_sha256'),hashlib.sha256(skill.encode()).hexdigest()}
+    changes=[];reports=[]
+    for codex in codex_homes(home,environ):
+        agents=codex/'AGENTS.md'
+        if agents.is_file():
+            original=agents.read_text()
+            match=re.search(re.escape(BEGIN)+r'\s*(.*?)\s*'+re.escape(END),original,re.S)
+            managed=bool(match and hashlib.sha256(match[1].strip().encode()).hexdigest() in known_policies)
+            if managed:changes.append((agents,block(original,policy),False))
+            reports.append({'path':str(agents),'status':'managed' if managed else 'preserved_custom'})
+        target=codex/'skills/handoff-state/SKILL.md'
+        if target.is_file():
+            managed=hashlib.sha256(target.read_bytes()).hexdigest() in known_skills
+            if managed:changes.append((target,skill,False))
+            reports.append({'path':str(target),'status':'managed' if managed else 'preserved_custom'})
+    return changes,reports,{'policy_sha256':hashlib.sha256(policy.strip().encode()).hexdigest(),'handoff_state_sha256':hashlib.sha256(skill.encode()).hexdigest()}
+
+
 def apply_update(source,home,environ):
     source=Path(source).expanduser().resolve();home=Path(home).resolve()
     binary=home/'.local/bin/tack';metadata=home/'.local/lib/tack/install.json'
@@ -142,13 +165,13 @@ def apply_update(source,home,environ):
                 item={'workspace':entry['workspace'],'status':'skipped' if skipped else 'failed','reason':str(error)};projects.append(item)
                 if not skipped:errors.append(item)
         backups=[];command=launcher(new_runtime);changed=binary.read_text()!=command
-        changes=[]
+        changes,instructions,instruction_hashes=managed_instructions(source,home,environ,installed)
         legacy=home/'.local/bin/work'
         if legacy.is_file() and 'from agent_work.cli import main' in legacy.read_text():changes.append((legacy,command,True))
-        changes.extend([(metadata,json.dumps({'format':1,'version':version,'runtime':str(new_runtime)},indent=2)+'\n',False),(binary,command,True)])
+        changes.extend([(metadata,json.dumps({'format':1,'version':version,'runtime':str(new_runtime),**instruction_hashes},indent=2)+'\n',False),(binary,command,True)])
         activate(changes,backups)
-        return {'version':version,'previous_version':old_version,'status':'updated' if changed else 'current','runtime':str(new_runtime),'backups':backups,'projects':projects,'errors':errors,
-                'note':'초기 setup·권한·전역 지침·Hook·셸 설정과 DB는 변경하지 않았습니다. 실행 중인 Dashboard는 기존 버전을 사용하므로 종료 후 다시 실행하세요. 건너뛴 프로젝트는 종료 후 tack update를 다시 실행하세요.'}
+        return {'version':version,'previous_version':old_version,'status':'updated' if changed else 'current','runtime':str(new_runtime),'backups':backups,'projects':projects,'errors':errors,'instructions':instructions,
+                'note':'관리 중인 Tack 지침·스킬을 갱신했습니다. 사용자 수정본은 instructions에서 확인하세요. 초기 setup·권한·Hook·셸 설정은 재실행하지 않습니다. 실행 중인 Dashboard는 기존 버전을 사용하므로 종료 후 다시 실행하세요. 건너뛴 프로젝트는 종료 후 tack update를 다시 실행하세요.'}
 
 def update(source=None):
     if source is not None:return apply_update(source,Path.home(),os.environ)
