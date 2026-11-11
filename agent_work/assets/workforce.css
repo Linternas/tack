@@ -10,3 +10,5 @@
 .permission-fields{border:1px solid var(--line);border-radius:8px;padding:14px;display:grid;gap:12px}.permission-fields legend{font-size:12px;padding:0 6px}.permission-fields details{font-size:12px}
 
 .workspace-dialog .autopilot-label{flex-direction:row;align-items:center}.workspace-dialog .autopilot-label input{width:13px;flex:0 0 13px;margin:0}
+
+.job-card .button.job-delete{color:#e9a49a;border-color:#76534f;margin-left:8px}.job-delete-blocker{font-size:11px;color:var(--muted);line-height:1.6}.job-trash{margin-top:18px;padding:15px;border:1px solid var(--line,#3b4657);border-radius:10px;font-size:12px}.job-trash>p{color:var(--muted);line-height:1.6}.job-trash-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 0;border-top:1px solid var(--line,#3b4657)}.job-trash-row>span{min-width:0;overflow-wrap:anywhere}.job-trash-row>button{flex-shrink:0}

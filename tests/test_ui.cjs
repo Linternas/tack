@@ -22,7 +22,7 @@ const makeTask = (id, title, category, status = 'todo', options = {}) => ({
   version: 1, created_at: '2026-10-22T00:00:00Z', updated_at: '2026-10-22T00:00:00Z', ...options,
 });
 
-async function setup(context) {
+async function setup(context, fixture) {
   const dom = new JSDOM(html, { url: 'http://127.0.0.1:8788/', runScripts: 'outside-only' });
   context.after(() => dom.window.close());
   const { window } = dom;
@@ -34,7 +34,7 @@ async function setup(context) {
     configurable: true,
     value: { writeText: async (text) => { clipboard.push(text); } },
   });
-  const records = [
+  const records = fixture || [
     makeTask('ISSUE-001', '목록 요청 버튼', 'issue', 'needs_recheck', { priority: 'P1' }),
     makeTask('DEC-001', '담당자 정책', 'decision', 'waiting_decision'),
     makeTask('API-001', '계산 응답', 'api', 'waiting_api'),
@@ -237,7 +237,7 @@ test('manual QA completion saves results and moves the record out of the remaini
   assert.match(payload.note, /사용자 QA 완료 처리/);
   assert.equal(ui.$('qa-completion').open, false);
   assert.deepEqual(ui.rows(), ['QA-002']);
-  assert.equal(ui.document.querySelector('.metric.qa .metric-number').textContent, '1');
+  assert.equal(ui.document.querySelector('#navigation [data-mode="qa"] .nav-count').textContent, '1');
   assert.equal(ui.document.querySelector('#detail-content [data-complete-qa]'), null);
   assert.equal(ui.records.find((task) => task.id === 'QA-002').qa_result, 'not_run');
   await ui.click('#close-detail');
@@ -347,4 +347,64 @@ test('connection failures leave existing records visible and display the error',
   await ui.click('#refresh');
   assert.equal(ui.$('connection-error').hidden, false);
   assert.deepEqual(ui.rows(), before);
+});
+
+
+test('status cards count states across categories and replace competing filters', async (t) => {
+  const fixture = [
+    makeTask('DEC-TODO', '기획 분류의 할 일', 'decision', 'todo'),
+    makeTask('ISSUE-RUN', '진행 작업', 'issue', 'in_progress'),
+    makeTask('QA-RECHECK', '재확인 작업', 'qa', 'needs_recheck'),
+    makeTask('API-BLOCKED', '차단 작업', 'api', 'blocked'),
+    makeTask('ISSUE-API', '계약 대기', 'issue', 'waiting_api'),
+    makeTask('TASK-DEC', '결정 대기', 'task', 'waiting_decision'),
+    makeTask('DONE', '완료 기록', 'decision', 'done'),
+    makeTask('ARCHIVED', '보관 기록', 'decision', 'archived'),
+  ];
+  const ui = await setup(t, fixture);
+  assert.equal(ui.$('metrics').querySelectorAll('[data-status]').length, 6);
+  assert.equal(ui.document.querySelector('#navigation [data-mode="decision"] .nav-count').textContent, '1');
+  for (const task of fixture.slice(0, 6)) {
+    await ui.click('#navigation [data-mode="qa"]');
+    await ui.change('search', '일치하지않는검색어');
+    await ui.change('area-filter', 'Scope 1');
+    await ui.change('priority-filter', 'P1');
+    await ui.click('#actionable-toggle');
+    await ui.change('include-closed', '');
+    ui.$('include-closed').checked = true;
+    await ui.click(`#metrics [data-status="${task.status}"]`);
+    assert.deepEqual(ui.rows(), [task.id]);
+    assert.equal(ui.$('result-count').textContent, '1건');
+    const card = ui.document.querySelector(`#metrics [data-status="${task.status}"]`);
+    assert.equal(card.querySelector('.metric-number').textContent, '1');
+    assert.equal(card.getAttribute('aria-pressed'), 'true');
+    assert.equal(ui.$('include-closed').checked, false);
+  }
+  await ui.click('#navigation [data-mode="decision"]');
+  assert.deepEqual(ui.rows(), ['DEC-TODO']);
+  await ui.click('#navigation [data-mode="done"]');
+  assert.deepEqual(ui.rows(), ['DONE']);
+  await ui.click('#navigation [data-mode="archived"]');
+  assert.deepEqual(ui.rows(), ['ARCHIVED']);
+  ui.records[0].status = 'waiting_decision';
+  await ui.click('#refresh');
+  assert.equal(ui.document.querySelector('#metrics [data-status="todo"] .metric-number').textContent, '0');
+  assert.equal(ui.document.querySelector('#metrics [data-status="waiting_decision"] .metric-number').textContent, '2');
+  await ui.click('#metrics [data-status="todo"]');
+  assert.deepEqual(ui.rows(), []);
+});
+
+test('project API, CLI counts, status cards and clicked rows agree', {skip: !process.env.TACK_BOARD_PARITY_FIXTURE}, async (t) => {
+  const fixture = JSON.parse(fs.readFileSync(process.env.TACK_BOARD_PARITY_FIXTURE, 'utf8'));
+  const ui = await setup(t, fixture.tasks);
+  for (const card of [...ui.$('metrics').querySelectorAll('[data-status]')]) {
+    const status = card.dataset.status;
+    const expected = fixture.counts[status] || 0;
+    assert.equal(Number(card.querySelector('.metric-number').textContent), expected, status);
+    await ui.click(`#metrics [data-status="${status}"]`);
+    assert.equal(ui.rows().length, expected, status);
+    assert.equal(ui.$('result-count').textContent, `${expected}건`, status);
+    const ids = fixture.tasks.filter(task => task.status === status).map(task => task.id).sort();
+    assert.deepEqual(ui.rows().sort(), ids, status);
+  }
 });

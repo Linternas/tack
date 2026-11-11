@@ -114,8 +114,11 @@ for raw in sys.stdin:
     def test_office_sprites_are_local_and_atlas_bounds_are_valid(self):
         import struct
         assets=Path(__file__).parents[1]/'agent_work/assets'
-        raw=(assets/'office-art.js').read_text().split('window.TackOfficeArt=',1)[1].rstrip(';\n')
-        sprites=json.loads(raw)
+        raw=(assets/'office-art.js').read_text().split('window.TackOfficeArt=',1)[1]
+        sprites,end=json.JSONDecoder().raw_decode(raw)
+        if 'Object.assign(window.TackOfficeArt,' in raw[end:]:
+            extra=raw[end:].split('Object.assign(window.TackOfficeArt,',1)[1]
+            sprites.update(json.JSONDecoder().raw_decode(extra)[0])
         self.assertGreater(len(sprites),30)
         for sprite in sprites.values():
             self.assertTrue(sprite['url'].startswith('/office-'))

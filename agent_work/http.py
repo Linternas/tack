@@ -17,6 +17,9 @@ class BoardServer(ThreadingHTTPServer):
     def __init__(self,address,store,project=None,allow_execution=False,harness=False):
         self.harness=harness
         self.allow_execution=allow_execution and harness
+        import threading
+        self._session_lock=threading.Lock()
+        self.session_offices={}
         self.store=store
         self.project=project or {'id':'test','name':'Test','workspace':str(Path.cwd()),'source_roots':['docs','specs','.vscode/plans']}
         super().__init__(address,Handler)
@@ -24,6 +27,18 @@ class BoardServer(ThreadingHTTPServer):
             from .run_queue import exists,wake
             with store.connect() as db:pending=exists(db) and db.execute("SELECT 1 FROM team_run_queue WHERE status='queued' AND workspace=?",(str(Path(self.project['workspace']).resolve()),)).fetchone()
             if pending:wake(self.project)
+
+    def session_office(self,store,project):
+        from .session_office import SessionOffice
+        # Creation is serialized because request handlers are threaded.
+        with self._session_lock:
+            if project['id'] not in self.session_offices:
+                self.session_offices[project['id']]=SessionOffice(store,project['workspace'])
+            return self.session_offices[project['id']]
+
+    def server_close(self):
+        for office in self.session_offices.values():office.close()
+        super().server_close()
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self,*args):
@@ -54,7 +69,7 @@ class Handler(BaseHTTPRequestHandler):
                 project=by_id(query['project'][0])
             store=self.server.store if project['id']==self.server.project['id'] else Store(project['db_path'])
             project={**project,**project_state(project.get('db_path',self.server.store.path))}
-            extension=path.startswith(('/api/goals','/api/team/','/api/orchestration','/api/workforce','/api/organization','/api/demo-days')) or path in {'/goals','/goals.html','/goals.js','/goals.css','/team','/workforce.html','/workforce.js','/workforce.css','/office.js','/office.css','/office-scene.js','/office-art.js','/organization.js','/office-demo-stage.png','/office-atlas.png','/office-avatar-0.png','/office-avatar-1.png','/office-avatar-3.png','/office-avatar-2.png','/office-avatar-6.png','/office-avatar-7.png','/office-avatar-5.png','/office-avatar-4.png','/office-avatar-9.png','/office-avatar-8.png','/office-room.png','/office-avatar-11.png','/office-avatar-10.png'}
+            extension=path.startswith(('/api/goals','/api/team/','/api/orchestration','/api/workforce','/api/organization','/api/demo-days','/api/session-office')) or path in {'/goals','/goals.html','/goals.js','/goals.css','/team','/workforce.html','/workforce.js','/workforce.css','/office.js','/office.css','/office-scene.js','/office-art.js','/organization.js','/session-office.js','/office-demo-stage.png','/office-atlas.png','/office-avatar-0.png','/office-avatar-1.png','/office-avatar-3.png','/office-avatar-2.png','/office-avatar-6.png','/office-avatar-7.png','/office-avatar-5.png','/office-avatar-4.png','/office-avatar-9.png','/office-avatar-8.png','/office-room.png','/office-avatar-11.png','/office-avatar-10.png'}
             if extension:
                 if not self.server.harness:raise BoardError('프로젝트 로컬 오케스트레이션에서만 제공됩니다.',404)
                 from .harness import require_enabled
@@ -73,6 +88,19 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(project_change(project,lifecycle_route[2],payload))
                 if project['status']=='archived':raise BoardError('보관 프로젝트는 읽기 전용입니다. 프로젝트를 복원해주세요.',409)
                 if project['status']=='deleted':raise BoardError('삭제한 프로젝트입니다.',410)
+                if path.startswith('/api/session-office'):
+                    if not self.server.allow_execution:raise BoardError('현재 서버는 조회 모드입니다.',403)
+                    if self.command!='POST':raise BoardError('POST JSON 요청이 필요합니다.')
+                    office=self.server.session_office(store,project)
+                    if path=='/api/session-office/start':return self.respond(office.start(payload),201)
+                    match=re.fullmatch(r'/api/session-office/([a-f0-9]{12}:[a-zA-Z0-9_-]{1,100})/(assign|send|interrupt|approve)',path)
+                    if not match:raise BoardError('없는 세션 경로입니다.',404)
+                    key,action=match.groups()
+                    if action=='assign':return self.respond(office.save(key,payload))
+                    if action=='send':return self.respond(office.send(key,payload))
+                    if action=='approve':return self.respond(office.approve(key,payload))
+                    if payload!={}:raise BoardError('빈 JSON 객체가 필요합니다.')
+                    return self.respond(office.interrupt(key))
                 if path.startswith('/api/organization') or path.startswith('/api/demo-days'):
                     if not self.server.allow_execution:raise BoardError('현재 서버는 조회 모드입니다.',403)
                     if self.command!='POST':raise BoardError('POST JSON 요청이 필요합니다.')
@@ -105,7 +133,7 @@ class Handler(BaseHTTPRequestHandler):
                         goal=workforce.create(**payload)
                         return self.respond({**goal,'launch':start(project,goal['id'],goal['version'])},201)
                     match=re.fullmatch(r'/api/workforce/(GOAL-[A-Z0-9]+)/(approve|accept|run|pause|assign|message|delegate|revoke-delegation|approve-request)',path)
-                    job_match=re.fullmatch(r'/api/workforce/(GOAL-[A-Z0-9]+)/(LOCAL-[0-9]+)/(reply|retry)',path)
+                    job_match=re.fullmatch(r'/api/workforce/(GOAL-[A-Z0-9]+)/(LOCAL-[0-9]+)/(reply|retry|delete|restore)',path)
                     if match:
                         key,action=match.groups()
                         if action in {'delegate','revoke-delegation','approve-request'}:
@@ -125,6 +153,7 @@ class Handler(BaseHTTPRequestHandler):
                         return self.respond(getattr(workforce,action)(key,payload))
                     if job_match:
                         key,job_id,action=job_match.groups()
+                        if action in {'delete','restore'}:return self.respond(workforce.delete_job(key,job_id,payload,restore=action=='restore'))
                         return self.respond(getattr(workforce,action)(key,job_id,payload))
                     raise BoardError('없는 팀 업무 경로입니다.',404)
                 if path=='/api/team/settings' and self.command=='PATCH':
@@ -170,6 +199,9 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(store.checkpoint(payload,path.rsplit('/',1)[1]))
                 raise BoardError('없는 저장 경로입니다.',404)
             if lifecycle_route and not lifecycle_route[2]:return self.respond(project_preview(project))
+            if path=='/api/session-office':
+                office=self.server.session_office(store,project)
+                return self.respond({**office.list(query.get('profile',[None])[0],query.get('cursor',[None])[0],view=query.get('view',['current'])[0],scope=query.get('scope',['project'])[0]),'workspace':str(Path(project['workspace']).resolve()),'execution_enabled':self.server.allow_execution and project['status']=='active'})
             if path=='/api/organization':
                 from .organization import Organization
                 return self.respond(Organization(store,project['workspace']).settings())
@@ -279,7 +311,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(render_index(store,project),mime='text/html; charset=utf-8')
             assets={'/':'index.html','/index.html':'index.html','/qa':'qa.html','/qa/':'qa.html','/qa.html':'qa.html','/sessions':'sessions.html','/projects':'projects.html','/goals':'goals.html','/usage':'usage.html','/team':'workforce.html'}
             name=assets.get(path,path.lstrip('/'))
-            if name not in {'index.html','qa.html','sessions.html','dashboard.js','dashboard.css','qa.js','qa.css','common.js','sessions.js','projects.html','projects.js','goals.html','goals.js','goals.css','usage.html','usage.js','usage.css','workforce.html','workforce.js','workforce.css','office.js','office.css','office-scene.js','office-art.js','organization.js','office-demo-stage.png','office-atlas.png','office-avatar-0.png','office-avatar-1.png','office-avatar-3.png','office-avatar-2.png','office-avatar-6.png','office-avatar-7.png','office-avatar-5.png','office-avatar-4.png','office-avatar-9.png','office-avatar-8.png','office-room.png','office-avatar-11.png','office-avatar-10.png'}:
+            if name not in {'index.html','qa.html','sessions.html','dashboard.js','dashboard.css','qa.js','qa.css','common.js','sessions.js','projects.html','projects.js','goals.html','goals.js','goals.css','usage.html','usage.js','usage.css','workforce.html','workforce.js','workforce.css','office.js','office.css','office-scene.js','office-art.js','organization.js','session-office.js','office-demo-stage.png','office-atlas.png','office-avatar-0.png','office-avatar-1.png','office-avatar-3.png','office-avatar-2.png','office-avatar-6.png','office-avatar-7.png','office-avatar-5.png','office-avatar-4.png','office-avatar-9.png','office-avatar-8.png','office-room.png','office-avatar-11.png','office-avatar-10.png'}:
                 raise BoardError('경로를 찾을 수 없습니다.',404)
             mime={'.html':'text/html','.css':'text/css','.js':'application/javascript','.png':'image/png'}[Path(name).suffix]
             return self.respond((ASSETS/name).read_bytes(),mime=mime+'; charset=utf-8')

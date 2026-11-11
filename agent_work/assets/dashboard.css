@@ -58,18 +58,19 @@ h1 { margin: 7px 0; font-size: 27px; letter-spacing: -.9px; font-weight: 750; li
 .button.quiet { background: transparent; color: var(--muted); border-color: var(--line); }
 .text-button { background: transparent; color: var(--muted); font-size: 11px; border: 0; padding: 6px 0; }
 .text-button:hover { color: var(--green); }
-.metrics { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 13px; }
+.metrics { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 13px; }
 .metric { display: block; padding: 17px 18px 14px; background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); text-align: left; box-shadow: var(--shadow); }
+.metric[aria-pressed="true"] { border-color: var(--green); background: var(--green-soft); }
 .metric:hover { border-color: hsl(163 22% 66%); }
 .metric-top { display: flex; align-items: center; justify-content: space-between; font-size: 11px; color: var(--muted); }
 .metric-icon { border-radius: 6px; width: 26px; height: 26px; display: grid; place-items: center; font-size: 14px; background: var(--soft); color: var(--ink); }
 .metric-number { display: block; font-size: 30px; font-weight: 700; letter-spacing: -.8px; margin: 4px 0 2px; }
 .metric-note { font-size: 10px; color: var(--muted); }
-.metric.issue .metric-icon { color: var(--red); background: hsl(2 35% 18%); }
-.metric.decision .metric-icon { color: var(--violet); background: hsl(260 35% 18%); }
-.metric.api .metric-icon { color: var(--orange); background: hsl(32 35% 18%); }
-.metric.qa .metric-icon { color: var(--blue); background: hsl(215 35% 18%); }
-.metric.done .metric-icon { color: var(--green); background: var(--green-soft); }
+.metric.needs_recheck .metric-icon, .metric.blocked .metric-icon { color: var(--red); background: hsl(2 35% 18%); }
+.metric.waiting_decision .metric-icon { color: var(--violet); background: hsl(260 35% 18%); }
+.metric.waiting_api .metric-icon { color: var(--orange); background: hsl(32 35% 18%); }
+.metric.todo .metric-icon { color: var(--blue); background: hsl(215 35% 18%); }
+.metric.in_progress .metric-icon { color: var(--green); background: var(--green-soft); }
 .work-summary { margin: 18px 0 23px; background: var(--green-soft); border: 1px solid var(--line); border-radius: 9px; padding: 13px 17px; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .work-summary > div { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; }
 .label-small { font-size: 11px; color: var(--green); font-weight: 600; }

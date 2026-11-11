@@ -80,12 +80,51 @@ class CliOutputTests(unittest.TestCase):
 
     def test_resume_preserves_target_and_current_session_and_full_dependency(self):
         result = self.cli('resume', self.task['id'])
-        self.assertEqual(result['task'], self.store.detail(self.task['id'])['task'])
+        self.assertEqual(result['task']['id'],self.task['id'])
+        self.assertEqual(result['task']['acceptance'],'target acceptance')
+        self.assertNotIn('qa',result['task'])
+        self.assertIn('record_counts',result)
         self.assertEqual(result['sessions'][0]['decisions'], 'important decision')
         dependency = result['dependencies'][0]
-        self.assertEqual(dependency['next_action'], 'next-contract')
+        self.assertEqual(dependency['status'],'waiting_api')
         self.assertNotIn('detail', dependency)
         self.assertNotIn('qa', dependency)
         full = self.cli('resume', self.task['id'], '--full', '--session', self.session['id'])
         self.assertEqual(full['dependencies'][0]['detail'], 'dependency-secret-detail')
         self.assertEqual(self.store.resume(self.task['id'])['dependencies'][0]['detail'], 'dependency-secret-detail')
+
+    def test_large_status_sessions_and_resume_are_bounded(self):
+        for i in range(15):self.store.write({'title':'extra '+str(i)})
+        big='실제 검증 원문\n'*1800
+        self.store.write({'version':self.task['version'],'verification':big,'qa':{**self.task['qa'],'actual':big}},self.task['id'])
+        result=self.cli('status')
+        self.assertEqual(len(result['tasks']),10);self.assertTrue(result['has_more']);self.assertEqual(result['total_tasks'],17)
+        resumed=self.cli('resume',self.task['id'])
+        self.assertNotIn('verification',resumed['task']);self.assertNotIn('qa',resumed['task'])
+        self.assertLess(len(json.dumps(resumed,ensure_ascii=False).encode()),5000)
+        self.assertEqual(self.cli('task','show',self.task['id'],'--full')['task']['verification'],big)
+        section=self.cli('task','show',self.task['id'],'--section','verification','--full')
+        self.assertEqual(section['text'],big)
+        self.assertEqual(self.cli('status','--limit','2')['limit'],2)
+        self.cli('status','--limit','0',ok=False)
+        self.cli('status','--offset','-1',ok=False)
+
+    def test_search_and_explicit_record_append(self):
+        receipt=self.cli('record','add',self.task['id'],'--kind','verification','--text','로그인 재시도 검증 성공')
+        result=self.cli('search','재시도')
+        self.assertEqual(result['matches'][0]['task_id'],self.task['id'])
+        self.assertEqual(self.cli('record','show',receipt['record_ids'][0])['text'],'로그인 재시도 검증 성공')
+        self.assertEqual(self.cli('record','list',self.task['id'],'--kind','verification')['total'],1)
+
+    def test_cross_project_search_returns_project_identity_and_filters(self):
+        other=self.root/'other';other.mkdir()
+        project=resolve(other,create=True)
+        store=Store(project['db_path'])
+        task=store.write({'title':'수자원 다른 프로젝트','category':'qa','status':'in_progress'})['task']
+        matches=self.cli('search','수자원','--all-projects')['matches']
+        self.assertEqual(len(matches),2)
+        self.assertEqual(len({m['project']['id'] for m in matches}),2)
+        filtered=self.cli('search','수자원','--all-projects','--category','qa')['matches']
+        self.assertEqual(len(filtered),1)
+        self.assertEqual(filtered[0]['project']['id'],project['id'])
+        self.assertEqual(filtered[0]['task_id'],task['id'])

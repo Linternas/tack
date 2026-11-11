@@ -11,8 +11,9 @@ from .store import BoardError
 from .usage import Usage
 
 class AppServer:
-    def __init__(self,cwd):
+    def __init__(self,cwd,codex_home=None):
         env=dict(os.environ)
+        if codex_home:env["CODEX_HOME"]=str(codex_home)
         for name in ('GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR','GIT_INDEX_FILE'):env.pop(name,None)
         self.proc=subprocess.Popen(['codex','-c','sandbox_workspace_write.writable_roots=[]','app-server','--listen','stdio://'],cwd=cwd,stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True,env={**env,'GIT_CEILING_DIRECTORIES':str(Path(cwd).resolve().parent)})
         self.messages=queue.Queue(maxsize=1000);self.closed=threading.Event();self.sequence=0;self.initialized=False;self.finished_turns=set()
@@ -51,6 +52,7 @@ class AppServer:
             if value is None:raise BoardError('Codex app-server가 응답 전에 종료됐습니다.',502)
             if 'method' in value:
                 if 'id' in value:
+                    if getattr(self,'request_handler',None) and self.request_handler(value):return {'notification':True}
                     method=value['method']
                     if method in {'item/commandExecution/requestApproval','item/fileChange/requestApproval'}:self.write({'id':value['id'],'result':{'decision':'decline'}})
                     else:self.write({'id':value['id'],'error':{'code':-32601,'message':'Tack의 승인 범위를 확대할 수 없습니다. 구조화된 사용자 질문으로 반환하세요.'}})

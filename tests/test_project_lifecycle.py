@@ -34,6 +34,15 @@ class ProjectLifecycleTests(unittest.TestCase):
         with self.assertRaises(sqlite3.OperationalError):self.store.write({'title':'No write while archived'})
         change(self.project,'restore',{'version':2});self.assertEqual(self.store.detail(self.task['id']),before);self.assertEqual(projects()[0]['id'],self.project['id'])
         self.store.write({'title':'Writable after restore'});self.assertEqual(self.source.read_text(),'Keep the source')
+    def test_delete_clears_search_records_and_fts_remains_consistent(self):
+        from agent_work.records import Records
+        Records(self.store).add(self.task['id'],'note','검색 대상 보존 확인')
+        self.archive();self.delete()
+        with closing(sqlite3.connect(self.store.path)) as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM work_records').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT count(*) FROM task_heads').fetchone()[0],0)
+            db.execute("INSERT INTO record_fts(record_fts) VALUES ('integrity-check')")
+
     def test_stale_missing_and_repeat_versions_are_rejected(self):
         for payload in [{},{'version':True},{'version':0}]:
             with self.assertRaises(BoardError):change(self.project,'archive',payload)

@@ -5,7 +5,7 @@ description: Run an explicitly requested development goal with the project-local
 
 Use `./.tack-orchestration/bin/tack-orchestration` from the project root (called HARNESS below). It stores tasks, sessions, decisions and results in the existing Tack project DB. Never create another task ledger or install this skill globally.
 
-For an explicit orchestration request, inspect `tack status` and `HARNESS goal list` and reuse matching work. For ordinary manual work use global `tack` recording only; this skill does not authorize starting a team automatically.
+For an explicit orchestration request, inspect `tack search "relevant keywords"` and `HARNESS goal list` and reuse matching work. For ordinary manual work use global `tack` recording only; this skill does not authorize starting a team automatically.
 
 For a new employee-team workflow, use `HARNESS team create 'BIG GOAL'`, then `HARNESS team run GOAL_ID --version N` to let the planning employee work read-only. The `/team` Dashboard creates and starts this planning request together. Employees own jobs and may ask colleagues concrete questions; a reply re-queues the original job. User questions always wait for an actual user answer. Do not start a separate agent outside this controller.
 

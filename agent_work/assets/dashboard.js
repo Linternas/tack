@@ -111,17 +111,19 @@
       )
       .join('');
     const metrics = [
-      ['issue', '확인할 문제', 'issue', countCategory('issue'), '현재 문제와 재현 확인'],
-      ['decision', '기획 결정', 'decision', countCategory('decision'), '범위·동작·권한 합의'],
-      ['api', 'API 확인·요청', 'api', countCategory('api'), '서버 계약·응답 확인'],
-      ['qa', '남은 QA', 'qa', countCategory('qa'), '절차와 기대 결과 확인'],
-      ['done', '완료 기록', 'done', done, '처리 근거와 결정 보관'],
+      ['todo', 'grid', '착수할 작업'],
+      ['in_progress', 'qa', '현재 수행 중인 작업'],
+      ['needs_recheck', 'issue', '결과·원인 재확인'],
+      ['blocked', 'issue', '선행 조건 해결 대기'],
+      ['waiting_api', 'api', '서버 계약·응답 대기'],
+      ['waiting_decision', 'decision', '기획 결정 대기'],
     ];
     $('metrics').innerHTML = metrics
-      .map(
-        ([mode, label, icon, count, hint]) =>
-          `<button class="metric ${mode}" data-mode="${mode}"><span class="metric-top">${label}<span class="metric-icon" aria-hidden="true">${window.tackIcon?.(icon)||''}</span></span><strong class="metric-number">${count}</strong><span class="metric-note">${hint}</span></button>`
-      )
+      .map(([status, icon, hint]) => {
+        const count = open.filter((task) => task.status === status).length;
+        const selected = state.mode === 'all' && $('status-filter').value === status;
+        return `<button class="metric ${status}" data-status="${status}" aria-pressed="${selected}"><span class="metric-top">${statuses[status]}<span class="metric-icon" aria-hidden="true">${window.tackIcon?.(icon)||''}</span></span><strong class="metric-number">${count}</strong><span class="metric-note">${hint}</span></button>`;
+      })
       .join('');
     const ready = open.filter(actionable).length;
     $('actionable-count').textContent = `${ready}건`;
@@ -168,7 +170,9 @@
           Number(actionable(b)) - Number(actionable(a)) ||
           a.id.localeCompare(b.id)
       );
-    $('list-title').textContent = items.find(([mode]) => mode === state.mode)?.[1] ?? '전체 작업';
+    $('list-title').textContent = state.mode === 'all' && $('status-filter').value
+      ? statuses[$('status-filter').value]
+      : items.find(([mode]) => mode === state.mode)?.[1] ?? '전체 작업';
     $('result-count').textContent = `${visible.length}건`;
     $('task-rows').innerHTML = visible.length
       ? visible
@@ -527,9 +531,16 @@
   setOptions($('edit-status'), statuses);
   setOptions($('edit-qa-result'), qaResults);
   document.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-mode], [data-open], [data-edit], [data-archive], [data-complete-qa]');
+    const button = event.target.closest('[data-status], [data-mode], [data-open], [data-edit], [data-archive], [data-complete-qa]');
     if (!button) return;
-    if (button.dataset.mode) {
+    if (button.dataset.status) {
+      state.mode = 'all';
+      state.actionable = false;
+      for (const id of ['search', 'area-filter', 'priority-filter']) $(id).value = '';
+      $('include-closed').checked = false;
+      $('status-filter').value = button.dataset.status;
+      render();
+    } else if (button.dataset.mode) {
       state.mode = button.dataset.mode;
       state.actionable = false;
       $('status-filter').value = '';

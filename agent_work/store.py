@@ -111,6 +111,9 @@ class Store:
                     db.execute("INSERT INTO history(task_id,action,note,after_data,created_at) VALUES (?,?,?,?,?)", (task["id"], "created", "기존 기록에서 초기 등록", data, now))
                 db.execute("INSERT INTO metadata VALUES ('seed_loaded', ?)", (timestamp(),))
 
+        from .records import Records
+        Records(self).ensure()
+
     @contextmanager
     def connect(self):
         from .project_lifecycle import access, state
@@ -174,7 +177,10 @@ class Store:
                 db.execute("UPDATE tasks SET version=?,data=?,updated_at=? WHERE id=?", (version, data, now, task_id))
             else:
                 db.execute("INSERT INTO tasks VALUES (?,?,?,?,?)", (task_id, version, data, now, now))
-            db.execute("INSERT INTO history(task_id,action,note,before_data,after_data,created_at) VALUES (?,?,?,?,?,?)", (task_id, "updated" if previous else "created", note, json.dumps(previous, ensure_ascii=False) if previous else None, data, now))
+            history=db.execute("INSERT INTO history(task_id,action,note,before_data,after_data,created_at) VALUES (?,?,?,?,?,?)", (task_id, "updated" if previous else "created", note, json.dumps(previous, ensure_ascii=False) if previous else None, data, now))
+            from .records import Records
+            Records.task(db,{**task,'id':task_id,'version':version,'updated_at':now})
+            Records.history(db,task_id,'HIST-'+str(history.lastrowid),note,now)
         if connection is not None:
             return {"task": {**task, "id":task_id, "version":version, "created_at":previous["created_at"] if previous else now, "updated_at":now}}
         return self.detail(task_id)
@@ -237,7 +243,9 @@ class Store:
             else:
                 session_id = 'RUN-' + uuid.uuid4().hex[:16].upper()
                 db.execute('INSERT INTO sessions VALUES (?,?,1,?,?,?)', (session_id,task_id,encoded,now,now))
-            db.execute('INSERT INTO checkpoints(session_id,data,created_at) VALUES (?,?,?)', (session_id,encoded,now))
+            checkpoint=db.execute('INSERT INTO checkpoints(session_id,data,created_at) VALUES (?,?,?)', (session_id,encoded,now))
+            from .records import Records
+            Records.checkpoint(db,task_id,'CHECK-'+str(checkpoint.lastrowid),data,now)
         return self.session(session_id)
 
     def resume(self, task_id, session_id=None):
@@ -268,6 +276,8 @@ class Store:
         with self.connect() as db:
             db.execute('INSERT OR IGNORE INTO documents VALUES (?,?,?,?,?,?,?)',
                 (doc_id,str(source),title,kind,digest,content,timestamp()))
+            from .records import Records
+            Records.document(db,dict(db.execute('SELECT * FROM documents WHERE id=?',(doc_id,)).fetchone()))
         return self.document(doc_id)
 
     def document(self, key):

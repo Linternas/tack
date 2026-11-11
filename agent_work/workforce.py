@@ -11,7 +11,7 @@ from .team import Team, skill_sources
 from .usage import Usage
 from .execution_policy import effective,mode,job_reason,command_reason
 
-STATES = {'queued':'todo','working':'in_progress','waiting_reply':'blocked','waiting_user':'waiting_decision',
+STATES = {'deleted':'archived','queued':'todo','working':'in_progress','waiting_reply':'blocked','waiting_user':'waiting_decision',
           'awaiting_approval':'blocked','awaiting_review':'blocked','done':'done','failed':'needs_recheck','paused':'blocked','conflict':'waiting_decision','waiting_jobs':'blocked','waiting_conditions':'blocked','waiting_contract':'blocked'}
 
 
@@ -96,13 +96,13 @@ class Workforce:
     @staticmethod
     def decode(row):return {**json.loads(row['data']),**{k:row[k] for k in ('id','goal_id','version','created_at','updated_at')}}
 
-    def jobs(self,key):
+    def jobs(self,key,include_deleted=False):
         with self.store.connect() as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='team_jobs'").fetchone():return []
-            return [self.decode(r) for r in db.execute('SELECT * FROM team_jobs WHERE goal_id=? ORDER BY created_at,id',(key,))]
+            return [job for r in db.execute('SELECT * FROM team_jobs WHERE goal_id=? ORDER BY created_at,id',(key,)) if (job:=self.decode(r))['status']!='deleted' or include_deleted]
 
     def job(self,key,job_id):
-        result=next((j for j in self.jobs(key) if j['id']==job_id),None)
+        result=next((j for j in self.jobs(key,include_deleted=True) if j['id']==job_id),None)
         if result is None:raise BoardError('이 목표의 업무를 찾을 수 없습니다.',404)
         return result
 
@@ -296,6 +296,7 @@ class Workforce:
                 for row in db.execute('SELECT * FROM team_jobs ORDER BY updated_at DESC'):
                     job=self.decode(row);goal=goal_by_id.get(job['goal_id'])
                     if not goal:continue
+                    if job['status']=='deleted':continue
                     status=job['status']
                     if status=='working' and (not goal.get('worker') or time.time()-goal.get('heartbeat',0)>30):status='needs_recheck'
                     jobs.append({k:job[k] for k in ('id','goal_id','title','employee','kind','updated_at')}|{'status':status,'goal_title':goal['title'],'goal_done':goal['status']=='done','result_preview':job.get('result','')[:180],'files_count':len(job['files'])})
@@ -319,10 +320,11 @@ class Workforce:
             owned=[j for j in jobs if j['employee']==employee];opened=[j for j in owned if j['status']!='done' and not j['goal_done']]
             current=min(opened,key=lambda j:rank.get(j['status'],5),default=None)
             employees.append({'id':employee,**role,'state':current['status'] if current else 'idle','current_job':current,'open_jobs':len(opened),'done_jobs':sum(j['status']=='done' for j in owned),'session_count':sessions.get(employee,0),'tokens':tokens.get(employee),'activity':activities.get(employee,'')})
-        return {'employees':employees,'jobs':jobs,'counts':{'working':sum(e['state']=='working' for e in employees),'waiting':sum(j['status'] in {'waiting_user','awaiting_approval','conflict'} for j in jobs if not j['goal_done'])+sum(g['status']=='awaiting_acceptance' for g in goal_by_id.values()),'done':sum(j['status']=='done' for j in jobs)},'reports':[j for j in jobs if j['status']=='done' and j['result_preview']][:20]}
+        return {'employees':employees,'jobs':jobs,'counts':{'working':sum(e['state']=='working' for e in employees),'waiting':sum(j['status'] in {'waiting_user','awaiting_approval','conflict','failed','needs_recheck'} for j in jobs if not j['goal_done'])+sum(g['status']=='awaiting_acceptance' for g in goal_by_id.values()),'done':sum(j['status']=='done' for j in jobs)},'reports':[j for j in jobs if j['status']=='done' and j['result_preview']][:20]}
 
     def snapshot(self,key):
-        goal=self.goal(key);jobs=self.jobs(key);roles=self.scoped_settings(goal)['roles']
+        goal=self.goal(key);all_jobs=self.jobs(key,include_deleted=True);jobs=[j for j in all_jobs if j['status']!='deleted'];roles=self.scoped_settings(goal)['roles']
+        for job in jobs:job['delete_blocker']=self.delete_reason(goal,job,all_jobs)
         with self.store.connect() as db:runs=[self.orch.decode(r) for r in db.execute('SELECT * FROM executions WHERE goal_id=? ORDER BY created_at',(key,))]
         employees=[]
         for employee,profile in roles.items():
@@ -339,7 +341,7 @@ class Workforce:
         scheduler={'capacity':(goal.get('execution_settings',{}) if goal.get('worker') else self.team.settings()).get('max_parallel',3),'running':sum(j['status']=='working' for j in jobs),'queued':sum(j['status']=='queued' for j in jobs),'waiting':sum(j['status'] in {'waiting_reply','waiting_jobs','waiting_conditions','waiting_contract','waiting_user','awaiting_approval','awaiting_review','conflict'} for j in jobs)}
         from .collaboration import Collaboration
         collaboration=Collaboration(self).snapshot(key)
-        return {'collaboration':collaboration,'queue':queue,'scheduler':scheduler,'goal':goal,'jobs':jobs,'employees':employees,'messages':self.team.feed(goal,runs),'settings':self.scoped_settings(goal),'runs':runs}
+        return {'collaboration':collaboration,'queue':queue,'scheduler':scheduler,'goal':goal,'jobs':jobs,'deleted_jobs':[j for j in all_jobs if j['status']=='deleted'],'employees':employees,'messages':self.team.feed(goal,runs),'settings':self.scoped_settings(goal),'runs':runs}
 
     @staticmethod
     def can_write(job,role):return role['kind']=='implement' and job['kind']=='task' or job['kind']=='document'
@@ -612,6 +614,57 @@ class Workforce:
                 data['job_id']=job_id
                 if not json.loads(row['data']).get('worker'):self.set_goal(db,key,status='ready',verification_results=[])
             self.team.insert(db,key,'user',payload['body'],payload['kind'],employee or None,data,key=event)
+        return self.snapshot(key)
+
+    @staticmethod
+    def delete_reason(goal,job,jobs):
+        if goal.get('worker'):return '실행을 중단하고 종료를 확인한 뒤 삭제해주세요.'
+        if goal['status']=='done':return '완료된 목표의 업무는 삭제할 수 없습니다.'
+        if job['status'] not in {'queued','awaiting_approval','waiting_user','paused','failed','conflict'}:
+            return '미실행·승인 대기·답변 대기·중단·실패 업무만 삭제할 수 있습니다.'
+        if job.get('parent') or job.get('request_id'):
+            return '동료 요청·검토에 연결된 업무입니다. 연결된 요청을 먼저 정리해주세요.'
+        for other in jobs:
+            if other['id']==job['id'] or other['status']=='deleted':continue
+            if job['id'] in other.get('depends_on',[]) or other.get('parent')==job['id'] or other['status']!='done' and job['id'] in other.get('delegated_to',[]):
+                return '다른 업무가 이 업무에 연결돼 있습니다: '+other['id']
+        return ''
+
+    def delete_job(self,key,job_id,payload,restore=False):
+        if not isinstance(payload,dict) or set(payload)!={'version','goal_version'} or any(type(payload[k]) is not int for k in payload):
+            raise BoardError('최신 목표·업무 버전이 필요합니다.')
+        self.goal(key)
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE');goal=self.lock_goal(db,key,payload['goal_version'])
+            rows=db.execute('SELECT * FROM team_jobs WHERE goal_id=?',(key,)).fetchall();jobs=[self.decode(row) for row in rows]
+            job=next((j for j in jobs if j['id']==job_id),None)
+            if not job:raise BoardError('이 목표의 업무를 찾을 수 없습니다.',404)
+            if job['version']!=payload['version']:raise BoardError('업무가 변경됐습니다. 최신 상태를 확인해주세요.',409)
+            from .run_queue import exists
+            if exists(db):
+                queued=db.execute('SELECT status FROM team_run_queue WHERE goal_id=?',(key,)).fetchone()
+                if queued and queued['status']=='running':raise BoardError('실행 시작 중입니다. 실행을 중단하고 종료를 확인해주세요.',409)
+            if restore:
+                if job['status']!='deleted' or goal['status']=='done':raise BoardError('삭제된 대기 업무만 복원할 수 있습니다.',409)
+                status=job['deleted_status']
+                if status=='queued' and self.can_write(job,self.team.settings()['roles'].get(job['employee'],{'kind':'implement'})):
+                    status='awaiting_approval'
+                self.change(db,job_id,{'status':status,'deleted_at':None,'approved_hash':None},job['version'])
+                text='대기 업무를 복원했습니다. 자동으로 실행하지 않습니다.'
+            else:
+                reason=self.delete_reason(goal,job,jobs)
+                if reason:raise BoardError(reason,409)
+                for row in db.execute('SELECT * FROM tasks'):
+                    task=self.store.decode(row)
+                    if task['id']!=job_id and task['status']!='archived' and job_id in task['blocked_by']:
+                        raise BoardError('이 업무를 선행 작업으로 사용하는 항목이 있습니다: '+task['id'],409)
+                self.change(db,job_id,{'status':'deleted','deleted_status':job['status'],'deleted_at':timestamp()},job['version'])
+                text='대기 업무를 삭제했습니다. 삭제된 업무에서 복원할 수 있습니다.'
+            if exists(db):db.execute("UPDATE team_run_queue SET status='cancelled',updated_at=? WHERE goal_id=? AND status='queued'",(timestamp(),key))
+            self.set_goal(db,key,status='paused',verification_results=[],error=text,pause_requested=True)
+            root=self.store.decode(db.execute('SELECT t.* FROM tasks t JOIN goals g ON g.task_id=t.id WHERE g.id=?',(key,)).fetchone())
+            self.store.write({'version':root['version'],'status':'blocked','note':text},root['id'],connection=db)
+            self.team.insert(db,key,'user',text,'decision',job['employee'],{'job_id':job_id,'action':'restore_job' if restore else 'delete_job'})
         return self.snapshot(key)
 
     def retry(self,key,job_id,payload):

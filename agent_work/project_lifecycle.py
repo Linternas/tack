@@ -93,9 +93,9 @@ def change(project,action,payload):
                             removed.append(str(target))
                     except OSError:raise BoardError('백업 삭제 중 실패했습니다. 일부 백업은 삭제됐을 수 있으며 DB 기록은 유지했습니다. 권한을 확인 후 다시 시도해주세요.',503)
                 db.execute('UPDATE metadata SET value=? WHERE key=?',(json.dumps({'status':'deleting','version':current['version']}),KEY))
-                tables=[r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+                tables=[r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB 'record_fts*'")]
                 for table in tables:db.execute('DELETE FROM "'+table.replace('"','""')+'"')
-            tables=[r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name!='metadata'")]
+            tables=[r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB 'record_fts*' AND name!='metadata'")]
             for table in tables:
                 quoted='"'+table.replace('"','""')+'"'
                 for operation in ('INSERT','UPDATE','DELETE'):

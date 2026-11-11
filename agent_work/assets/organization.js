@@ -81,8 +81,8 @@ window.TackOrganization = {
       paths.rows = 3;
       paths.placeholder = 'apps/chess\npackages/chess-ui';
       body.append(el('p', '지원만 하는 기획·QA팀은 경로를 비워둘 수 있습니다. 공유 패키지는 소유 팀 하나에 배정하세요.', 'dialog-guide'));
-      const staffing = field(body, '직원 구성', 'staffing', '', 'select');
-      for (const [v, label] of [['new', '기획·개발·QA 직원 3명 새로 배치'], ['existing', '기존 직원 선택']]) {
+      const staffing = field(body, '역할 구성', 'staffing', '', 'select');
+      for (const [v, label] of [['new', '기획·개발·QA 역할 3개 준비'], ['existing', '기존 역할 선택']]) {
         const o = el('option', label);
         o.value = v;
         staffing.append(o);
@@ -155,7 +155,7 @@ window.TackOrganization = {
       version++;
       const org = data.organization,
         toolbar = el('div', null, 'org-toolbar');
-      toolbar.append(el('p', '앱별 팀과 직군별 지원 팀을 자유롭게 구성하세요.', 'office-guide'), button('+ 팀 만들기', () => edit(), 'button primary'));
+      toolbar.append(el('p', '팀의 역할을 미리 구성하세요. 사무실에서 팀과 역할을 선택하면 실제 Codex 세션을 시작할 수 있습니다.', 'office-guide'), button('+ 팀 만들기', () => edit(), 'button primary'));
       toolbar.lastChild.disabled = !data.execution_enabled;
       root.append(toolbar);
       const cards = el('div', null, 'org-teams');
@@ -195,7 +195,7 @@ window.TackOrganization = {
         free = Object.entries(data.settings.roles).filter(([id]) => !assigned.has(id));
       if (free.length) {
         const bank = el('section', null, 'org-unassigned');
-        bank.append(el('h2', '미배치 직원'), el('p', '팀 설정에서 기존 직원을 선택해 배치할 수 있습니다.', 'office-guide'));
+        bank.append(el('h2', '미배치 역할'), el('p', '팀 설정에서 기존 역할을 선택해 배치할 수 있습니다.', 'office-guide'));
         const people = el('div', null, 'org-members');
         for (const [id, role] of free) {
           const item = el('div');

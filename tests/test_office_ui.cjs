@@ -13,3 +13,35 @@ test('scene selection opens details and closing returns keyboard focus to the sa
 test('isometric depth order puts a chair seat behind its seated employee',t=>{const {w}=setup(t),scene=w.TackOfficeScene;assert.deepEqual(JSON.parse(JSON.stringify(scene.project(2,1))),{x:32,y:48});const employee={id:'employee',box:{x:1,y:1,w:.36,d:.36,z:12,h:30}},seat={id:'seat',box:{x:1,y:1,w:1,d:1,z:0,h:12}};assert.equal(scene.depthOrder([employee,seat])[0].id,'seat');});
 
 test('employees remain selectable after dragging the office camera',async t=>{const {w,$}=setup(t);const canvas=w.document.querySelector('.office-canvas');canvas.dispatchEvent(new w.MouseEvent('pointerdown',{button:0,clientX:20,clientY:20}));canvas.dispatchEvent(new w.MouseEvent('pointermove',{clientX:90,clientY:40}));canvas.dispatchEvent(new w.MouseEvent('pointerup'));w.document.querySelector('.studio-desk').click();await tick();assert.ok($('office-person'));});
+
+test('motion pause control survives employee selection and remains keyboard accessible',async t=>{
+  const {w,ui}=setup(t);
+  let control=w.document.querySelector('[aria-label="사무실 애니메이션 일시정지"]');
+  assert.ok(control.querySelector('svg'));
+  control.click();await tick();
+  assert.equal(control.getAttribute('aria-pressed'),'true');
+  ui.select('dev');
+  control=w.document.querySelector('[aria-label="사무실 애니메이션 재생"]');
+  assert.equal(control.getAttribute('aria-pressed'),'true');
+  control.focus();assert.equal(w.document.activeElement,control);
+  control.click();await tick();
+  assert.equal(control.getAttribute('aria-pressed'),'false');
+});
+
+test('long staff guidance is expandable after action buttons and remains fully readable',t=>{
+  const {w,ui}=setup(t);
+  const text='책임과 검증 조건을 보존합니다. '.repeat(70);
+  ui.update({execution_enabled:true,settings:{roles:{dev:{name:'개발'}}},goals:[],office:{employees:[{id:'dev',name:'개발',state:'idle',instructions:text}],jobs:[],reports:[],counts:{}}});
+  ui.select('dev');
+  const panel=w.document.getElementById('office-person'),details=panel.querySelector('.person-guidance');
+  assert.equal(details.open,false);
+  assert.equal(details.querySelector('p').textContent,text);
+  assert.ok(panel.querySelector('.person-responsibility-preview').textContent.length<=181);
+  assert.ok(panel.querySelector('.person-actions').compareDocumentPosition(details)&w.Node.DOCUMENT_POSITION_FOLLOWING);
+});
+
+test('mobile closing the staff detail restores focus to its visible staff picker',async t=>{
+  const {w,ui}=setup(t);w.matchMedia=()=>({matches:true,addEventListener(){},removeEventListener(){}});
+  ui.select('dev');w.document.querySelector('.person-close').click();await tick();
+  assert.equal(w.document.activeElement.getAttribute('aria-label'),'사무실 직원 선택');
+});
