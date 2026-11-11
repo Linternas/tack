@@ -1,4 +1,4 @@
-import json, queue, tempfile, time, unittest
+import json, os, queue, tempfile, time, unittest
 from pathlib import Path
 from unittest.mock import patch
 from agent_work.session_office import SessionOffice, observed
@@ -146,6 +146,71 @@ class SessionOfficeTests(unittest.TestCase):
         path.write_text('\n'.join(json.dumps(v) for v in [{'type':'event_msg','timestamp':'now','payload':{'type':'task_started','private':'secret'}},{'type':'response_item','payload':{'text':'secret'}}]))
         self.assertEqual(observed({'path':str(path)},{'home':str(home)}),{'kind':'task_started','at':'now'})
         self.assertIsNone(observed({'path':str(path)},{'home':str(self.root/'other')}))
+
+    def managed_project(self):
+        self.state_patch = patch.dict(os.environ, {'AGENT_WORK_HOME': str(self.root/'state')})
+        self.state_patch.start()
+        self.addCleanup(self.state_patch.stop)
+        from agent_work.projects import resolve
+        workspace = self.root/'project'
+        workspace.mkdir()
+        self.project = resolve(workspace, create=True)
+        self.office.close()
+        self.store = Store(self.project['db_path'])
+        self.office = SessionOffice(self.store, workspace)
+
+    def test_archive_waits_for_direct_session_interruption(self):
+        self.managed_project()
+        from agent_work.project_lifecycle import change, preview
+        server = Protocol(hang=True)
+        self.start(server)
+        self.wait('working')
+        self.assertFalse(preview(self.project)['can_archive'])
+        with self.assertRaises(BoardError) as error:
+            change(self.project, 'archive', {'version': 1})
+        self.assertEqual(error.exception.status, 409)
+        self.office.interrupt(KEY)
+        self.office.running[KEY]['worker'].join(2)
+        self.assertFalse(self.office.running[KEY]['worker'].is_alive())
+        self.assertTrue(preview(self.project)['can_archive'])
+        change(self.project, 'archive', {'version': 1})
+        change(self.project, 'delete', {'version': 2, 'confirmation': self.project['name'], 'include_backups': False})
+        self.assertTrue(server.closed or self.office.running[KEY]['public']['state'] == 'paused')
+
+    def test_approval_wait_blocks_archive_until_connection_stops(self):
+        self.managed_project()
+        from agent_work.project_lifecycle import change
+        self.start(Protocol(approval=True))
+        self.wait('awaiting_approval')
+        with self.assertRaises(BoardError):
+            change(self.project, 'archive', {'version': 1})
+        self.office.close()
+        with self.store.connect() as db:
+            state = json.loads(db.execute('SELECT data FROM office_executions WHERE id=?', (KEY,)).fetchone()[0])
+        self.assertNotEqual(state['status'], 'running')
+        change(self.project, 'archive', {'version': 1})
+
+    def test_worker_start_failure_releases_execution(self):
+        self.managed_project()
+        from agent_work.project_lifecycle import change
+        server = Protocol(hang=True)
+        with patch('agent_work.session_office.threading.Thread.start', side_effect=RuntimeError('cannot start')):
+            with self.assertRaises(RuntimeError):
+                self.start(server)
+        self.assertTrue(server.closed)
+        self.assertNotIn(KEY, self.office.running)
+        change(self.project, 'archive', {'version': 1})
+
+    def test_crashed_process_group_requires_proof_of_exit(self):
+        from agent_work.project_lifecycle import office_execution_active
+        record = {'status': 'running', 'process_group': 12345}
+        with patch('agent_work.project_lifecycle.os.killpg'):
+            self.assertTrue(office_execution_active(record))
+        with patch('agent_work.project_lifecycle.os.killpg', side_effect=PermissionError):
+            self.assertTrue(office_execution_active(record))
+        with patch('agent_work.project_lifecycle.os.killpg', side_effect=ProcessLookupError):
+            self.assertFalse(office_execution_active(record))
+        self.assertTrue(office_execution_active({'status': 'running'}))
 
 class SessionOfficeHttpTests(unittest.TestCase):
     def setUp(self):

@@ -2,6 +2,7 @@
 from contextlib import contextmanager, closing
 import fcntl
 import json
+import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -39,13 +40,27 @@ def backups(project):
     paths=[p for p in parent.iterdir() if p.name in {'backups','evidence'} or p.name.startswith('migration-')]
     return sorted(paths)
 
+def office_execution_active(data):
+    if data.get('status') != 'running':
+        return False
+    group = data.get('process_group')
+    if type(group) is int and group > 0:
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return False
+        except PermissionError:
+            pass
+    return True
+
 def idle(db):
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='team_run_queue'").fetchone() and db.execute("SELECT 1 FROM team_run_queue WHERE status IN ('queued','running')").fetchone():raise BoardError('실행 큐에 대기·진행 중인 요청이 있습니다. 취소 또는 실행 종료 후 다시 시도해주세요.',409)
-    for table in ('sessions','goals','executions'):
+    for table in ('sessions','goals','executions','office_executions'):
         if not db.execute('SELECT 1 FROM sqlite_master WHERE name=?',(table,)).fetchone():continue
         for row in db.execute('SELECT data FROM '+table):
             data=json.loads(row[0])
             busy=(data.get('worker') or data.get('status') in {'running','verifying'}) if table=='goals' else data.get('status')==('active' if table=='sessions' else 'running')
+            if table=='office_executions':busy=office_execution_active(data)
             if busy:raise BoardError('활성 세션 또는 실행 중인 목표가 있습니다. 실제 종료를 확인하고 세션 완료/목표 중단·복구 후 다시 시도해주세요.',409)
 
 def preview(project):

@@ -69,11 +69,17 @@ class AppServer:
             return value.get('result',{})
 
     def run(self,work,goal,job,worker,run_id,prompt,thread,write,network,model):
-        turn=None;thread_id=thread;status=None;body='';usage=None;count=0;last_update=0
+        turn=None;thread_id=thread;status=None;body='';usage=None;count=0;last_update=0;last_heartbeat=0
         def cancel():
+            nonlocal last_heartbeat
             state=work.goal(goal['id'])
             from .collaboration import Collaboration
-            return 'interrupted' if state.get('worker')!=worker or state.get('pause_requested') else work.orch.budget_reason(state) or Collaboration(work).budget(goal['id'],job['employee'])
+            reason='interrupted' if state.get('worker')!=worker or state.get('pause_requested') else work.orch.budget_reason(state) or Collaboration(work).budget(goal['id'],job['employee'])
+            now=time.monotonic()
+            if not reason and now-last_heartbeat>.5:
+                work.orch.update(goal['id'],{'heartbeat':time.time()},worker=worker)
+                last_heartbeat=now
+            return reason
         def event(value):
             nonlocal turn,status,body,usage,count,last_update
             method=value.get('method');p=value.get('params',{})
@@ -91,7 +97,6 @@ class AppServer:
                     body=next((item.get('text','') for item in reversed(current.get('items',[])) if item.get('type')=='agentMessage'),'')
             now=time.monotonic()
             if now-last_update>.5:
-                work.orch.update(goal['id'],{'heartbeat':time.time()},worker=worker)
                 activity={'item/started':'도구 실행 중','item/completed':'실행 결과 확인','item/agentMessage/delta':'응답 작성 중','thread/tokenUsage/updated':'사용량 수집 중'}.get(method,'에이전트와 연결 중')
                 work.orch.run_update(run_id,event_count=count,activity=activity);last_update=now
         try:

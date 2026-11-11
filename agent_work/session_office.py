@@ -276,8 +276,28 @@ class SessionOffice:
                     self._show_approval(runtime)
                 return True
             server.request_handler = request
-            self.send(key, {'prompt': prompt})
+            try:
+                self.send(key, {'prompt': prompt})
+            except BaseException:
+                server.close()
+                self.running.pop(key, None)
+                raise
         return self.row(raw, self.assignments())
+
+    def execution(self, key, status, server):
+        with self.store.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            if status == 'running':
+                db.execute('CREATE TABLE IF NOT EXISTS office_executions (id TEXT PRIMARY KEY,data TEXT NOT NULL,updated_at TEXT NOT NULL)')
+                row = db.execute('SELECT data FROM office_executions WHERE id=?', (key,)).fetchone()
+                from .project_lifecycle import office_execution_active
+                if row and office_execution_active(json.loads(row['data'])):
+                    raise BoardError('기존 세션 실행의 종료를 먼저 확인해주세요.', 409)
+                process = getattr(server, 'proc', None)
+                data = {'status': status, 'process_group': process.pid if process else None}
+                db.execute('INSERT INTO office_executions VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,updated_at=excluded.updated_at', (key, json.dumps(data), timestamp()))
+            else:
+                db.execute("UPDATE office_executions SET data=json_set(data,'$.status',?),updated_at=? WHERE id=?", (status, timestamp(), key))
 
     def send(self, key, payload):
         if not isinstance(payload, dict) or set(payload) != {'prompt'} or not isinstance(payload['prompt'], str) or not 1 <= len(payload['prompt'].strip()) <= 20000:
@@ -290,6 +310,7 @@ class SessionOffice:
                 raise BoardError('실행 중입니다. 응답이 끝나거나 중단한 후 지시해주세요.', 409)
             if sum(r['public']['state'] in {'working', 'awaiting_approval'} for r in self.running.values()) >= 3:
                 raise BoardError('동시 실행 한도는 3개입니다.', 409)
+            self.execution(key, 'running', runtime['server'])
             runtime['cancel'].clear()
             runtime['public'].update(state='working', activity='Codex 응답 대기', error='', last_message='')
         def run():
@@ -344,10 +365,21 @@ class SessionOffice:
                     runtime['public'].update(state='failed', activity='연결 종료', error=str(error)[:500], controlled=False)
             finally:
                 with self.lock:
+                    if runtime['public']['state'] in {'working', 'awaiting_approval'}:
+                        server.close()
+                        runtime['public'].update(state='failed', activity='연결 종료', controlled=False)
+                    self.execution(key, runtime['public']['state'], server)
                     self.cache.clear()
         worker = threading.Thread(target=run, daemon=True)
         runtime['worker'] = worker
-        worker.start()
+        try:
+            worker.start()
+        except BaseException:
+            runtime.pop('worker', None)
+            runtime['server'].close()
+            runtime['public'].update(state='failed', controlled=False)
+            self.execution(key, 'failed', runtime['server'])
+            raise
         return {'id': key, 'state': 'working'}
 
     @staticmethod

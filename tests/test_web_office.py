@@ -93,6 +93,42 @@ for raw in sys.stdin:
             current=self.work.goal(g['id']);self.work.orch.pause(g['id'],current['version']);thread.join(5)
             self.assertFalse(thread.is_alive());self.assertEqual(result[0]['status'],'interrupted')
         for runtime in self.work.runtimes.values():runtime.close()
+    def test_silent_app_server_refreshes_heartbeat_without_notifications(self):
+        from types import SimpleNamespace
+        settings = self.configure()
+        goal = self.work.create('silent worker')
+        goal = self.work.orch.update(goal['id'], {'worker': 'owner', 'status': 'running', 'execution_settings': settings, 'heartbeat': time.time(), 'deadline_at': time.time()+120}, goal['version'])
+        binary, trace = self.fake('hang')
+        job = self.work.jobs(goal['id'])[0]
+        offset = [0]
+        clock = SimpleNamespace(monotonic=time.monotonic, time=lambda: time.time()+offset[0])
+        result = []
+        with patch.dict(os.environ, {'PATH': str(binary)+os.pathsep+os.environ['PATH']}), patch('agent_work.codex_app_server.time', clock), patch('agent_work.orchestration.time', clock):
+            worker = threading.Thread(target=lambda: result.append(self.work.employee_run(goal, job, 'owner')))
+            worker.start()
+            try:
+                deadline = time.monotonic()+5
+                while time.monotonic()<deadline and (not trace.exists() or 'turn/start' not in trace.read_text()):
+                    time.sleep(.02)
+                self.assertIn('turn/start', trace.read_text())
+                offset[0] = 40
+                deadline = time.monotonic()+3
+                while time.monotonic()<deadline and clock.time()-self.work.goal(goal['id'])['heartbeat']>2:
+                    time.sleep(.02)
+                self.assertLess(clock.time()-self.work.goal(goal['id'])['heartbeat'], 2)
+                overview = self.work.orch.overview()
+                current = next(g for g in overview['goals'] if g['id']==goal['id'])
+                self.assertEqual(current['status'], 'running')
+                self.assertTrue(worker.is_alive())
+                self.assertEqual(overview['runs'][0]['event_count'], 0)
+            finally:
+                if worker.is_alive():
+                    current = self.work.goal(goal['id'])
+                    self.work.orch.pause(goal['id'], current['version'])
+                worker.join(5)
+            self.assertFalse(worker.is_alive())
+            self.assertEqual(result[0]['status'], 'interrupted')
+
     def test_office_filters_other_workspace_and_counts_final_acceptance(self):
         goal=self.work.create('current')
         self.work.orch.update(goal['id'],{'status':'awaiting_acceptance'},goal['version'])
