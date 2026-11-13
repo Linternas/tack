@@ -4,12 +4,13 @@ import hashlib
 import json
 import sqlite3
 from .store import BoardError, TEXT_FIELDS, timestamp
+from .worklists import queue_of
 
 CHUNK_SIZE = 2000
 CHUNK_OVERLAP = 200
 KINDS = {'task', 'checkpoint', 'history', 'document', 'decision', 'verification', 'note'}
 DERIVED_KINDS = ('task', 'checkpoint', 'history', 'document')
-HEAD_KEYS = ('id', 'title', 'category', 'status', 'priority', 'owner', 'version', 'updated_at', 'summary', 'next_action', 'acceptance', 'blocked_by', 'truncated_fields')
+HEAD_KEYS = ('id', 'title', 'page_path', 'category', 'status', 'queue', 'is_api_request', 'priority', 'owner', 'version', 'updated_at', 'summary', 'next_action', 'acceptance', 'parent_id', 'blocked_by', 'truncated_fields')
 
 
 def bounded(value, limit):
@@ -84,7 +85,7 @@ class Records:
             return
         head = {k:task[k] for k in HEAD_KEYS if k not in {'truncated_fields'}}
         head['truncated_fields'] = []
-        for key, limit in (('summary',240),('next_action',480),('acceptance',480)):
+        for key, limit in (('summary',240),('next_action',480),('acceptance',480),('page_path',240)):
             if len(head[key])>limit:
                 head['truncated_fields'].append(key)
                 head[key] = bounded(head[key],limit)
@@ -93,7 +94,7 @@ class Records:
         db.execute("DELETE FROM record_dirty WHERE kind='task' AND source_id=?",(task['id'],))
         sections = {k:task[k] for k in sorted(TEXT_FIELDS)}
         sections.update({'qa.'+k:v for k,v in task['qa'].items()})
-        for key in ('areas','sources','blocked_by'):
+        for key in ('areas','sources','blocked_by','relations'):
             if task[key]:
                 sections[key] = json.dumps(task[key],ensure_ascii=False)
         for section, body in sections.items():
@@ -205,7 +206,12 @@ class Records:
 
     def heads(self):
         with self.read_index() as (db,_):
-            return [json.loads(r['data']) for r in db.execute('SELECT data FROM task_heads')]
+            heads = [json.loads(r['data']) for r in db.execute('SELECT data FROM task_heads')]
+            for head in heads:
+                head.setdefault('page_path','')
+                head['queue'] = queue_of(head)
+                head.setdefault('is_api_request',head.get('category')=='api')
+            return heads
 
     def overview(self, task_id):
         head=next((t for t in self.heads() if t['id']==task_id),None)
@@ -213,7 +219,8 @@ class Records:
             raise BoardError('작업을 찾을 수 없습니다.',404)
         with self.read_index() as (db,_):
             counts = {r['kind']:r['count'] for r in db.execute('SELECT kind,count(*) AS count FROM work_records WHERE task_id=? AND current=1 GROUP BY kind',(task_id,))} if present(db,'work_records') else {}
-        return {'task':head,'record_counts':counts}
+        head.setdefault('parent_id','')
+        return {'task':head,'record_counts':counts,'relationships':self.store.relationships(task_id)}
 
     def add(self, task_id, kind, text):
         if kind not in {'decision','verification','note'} or not isinstance(text,str) or not text.strip() or len(text)>30000:
@@ -266,14 +273,14 @@ class Records:
             result['next_record']=siblings[position+1]['id'] if position+1<len(siblings) else None
         return result
 
-    def search(self, query, limit=5, statuses=None, categories=None, kind=None, include_archived=False):
+    def search(self, query, limit=5, statuses=None, categories=None, kind=None, include_archived=False, queues=None):
         if not isinstance(query,str) or not 1<=len(query.strip())<=200:
             raise BoardError('검색어를 1~200자로 입력해주세요.')
         with self.read_index() as (db,indexed):
-            return self.query(db,query,limit,statuses,categories,kind,include_archived,indexed)
+            return self.query(db,query,limit,statuses,categories,kind,include_archived or bool(queues and 'archived' in queues),indexed,queues)
 
     @classmethod
-    def query(cls, db, query, limit, statuses, categories, kind, include_archived, indexed):
+    def query(cls, db, query, limit, statuses, categories, kind, include_archived, indexed, queues=None):
         terms=query.split()
         where=['r.current=1'];params=[]
         if statuses:
@@ -297,12 +304,13 @@ class Records:
         for row in db.execute(sql,params):
             identity=row['task_id'] or row['source_id']
             if identity in seen:continue
+            head=json.loads(row['head']) if row['head'] else {}
+            if queues and (not head or queue_of(head) not in queues):continue
             seen.add(identity)
             if len(matches)==limit:break
-            head=json.loads(row['head']) if row['head'] else {}
             body=row['body'];positions=[body.casefold().find(t.casefold()) for t in terms];positions=[p for p in positions if p>=0]
             start=max(0,min(positions,default=0)-40)
             match=cls.metadata(row)
-            match.update(title=head.get('title',row['title']),status=head.get('status',''),version=head.get('version'),snippet=bounded(body[start:],160))
+            match.update(queue=queue_of(head) if head else None,title=head.get('title',row['title']),status=head.get('status',''),version=head.get('version'),snippet=bounded(body[start:],160))
             matches.append(match)
         return {'query':query,'matches':matches,'has_more':len(seen)>limit,'indexed':indexed,'engine':'fts5-trigram' if fts else 'substring'}
