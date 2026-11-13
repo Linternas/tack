@@ -296,6 +296,12 @@ tack task unlink TASK_ID TARGET_ID --type superseded_by --version VERSION
 
 담당 에이전트가 Tack CLI로 이 절차를 수행합니다. 실제 준수 여부는 에이전트 실행 결과와 기록을 통해 확인해야 합니다.
 
+### AGENTS.md 지침 관리
+
+전역 `AGENTS.md`의 Tack 관리 블록은 `templates/work-policy.md`, 기록 스킬은 `templates/handoff-state.md`를 기준으로 설치됩니다. `tack update`는 기본 Codex, 존재하는 회사 프로필(`~/.codex-company`), Orca의 Codex 계정에 설치된 관리 지침·스킬을 갱신합니다. 사용자 수정본은 결과의 `instructions`에 `preserved_custom`으로 표시되므로 변경 내용을 직접 검토해 병합합니다.
+
+프로젝트 `AGENTS.md`에는 해당 프로젝트의 규칙과 계약을 기록합니다. 기존 로컬 지침이 이전 상태값을 요구한다면 현재 `queue` 기준으로 정리합니다. 원인 조사는 `issue`, 제품 결정·API 계약 대기는 `waiting`을 사용하고, 필요한 결정·응답·선행 조건은 `next_action`에 기록합니다. 실제 API 요청은 `is_api_request`, 확인된 UI 화면은 `page_path`에 기록합니다. 프로젝트 지침은 전역 업데이트 후에도 직접 정합성을 확인해야 합니다.
+
 ## 에이전트 팀과 개발하기
 
 ### 프로젝트에 하네스 설치
