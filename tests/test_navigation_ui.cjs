@@ -16,7 +16,7 @@ test('every page keeps the same ordered SVG navigation in Core and orchestration
 });
 test('board classifications stay inside the board and the project picker survives',async t=>{
  const w=setup(t,asset('index.html'));const picker=w.document.getElementById('project-picker');w.eval(asset('common.js'));await tick();
- assert.ok(w.document.querySelector('.board #navigation'));assert.equal(w.document.querySelector('.sidebar #navigation'),null);assert.equal(w.document.getElementById('project-picker'),picker);assert.ok(w.document.querySelector('main #project-picker'));
+ assert.equal(w.document.getElementById('navigation'),null);assert.equal(w.document.querySelector('.board #category-filter'),null);assert.ok(w.document.querySelector('.board #record-view'));assert.equal(w.document.getElementById('project-picker'),picker);assert.ok(w.document.querySelector('main #project-picker'));
 });
 test('Core keeps team entry visible and blocks unsupported navigation',async t=>{
  const w=setup(t,asset('index.html'),false);w.eval(asset('common.js'));await tick();const link=w.document.querySelector('.sidebar a[href^="/team"]');

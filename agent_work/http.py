@@ -189,6 +189,11 @@ class Handler(BaseHTTPRequestHandler):
                     key,action=path.split('/')[-2:]
                     result=start(project,key,payload['version'],approve=True) if action=='start' else Orchestrator(store,project['workspace']).pause(key,payload['version'])
                     return self.respond(result)
+                relation_route=re.fullmatch(r'/api/tasks/([A-Z0-9-]+)/relations',path)
+                if relation_route and self.command=='POST':
+                    if not isinstance(payload,dict) or set(payload)-{'target','type','version','remove'} or not {'target','type','version'}<=set(payload) or type(payload.get('remove',False)) is not bool:
+                        raise BoardError('관계 유형·대상·최신 version을 확인해주세요.')
+                    return self.respond(store.link(relation_route[1],payload['target'],payload['type'],payload['version'],payload.get('remove',False)))
                 if path=='/api/tasks' and self.command=='POST':
                     return self.respond(store.write(payload),201)
                 if re.fullmatch(r'/api/tasks/[A-Z0-9-]+',path) and self.command=='PATCH':
@@ -284,6 +289,9 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/api/usage':
                 from .usage import Usage
                 return self.respond(Usage(store).overview(query.get('goal',[None])[0],query.get('role',[None])[0]))
+            relation_route=re.fullmatch(r'/api/tasks/([A-Z0-9-]+)/relations',path)
+            if relation_route:
+                return self.respond(store.relationships(relation_route[1],limit=int(query.get('limit',['10'])[0]),offset=int(query.get('offset',['0'])[0])))
             if path=='/api/tasks':
                 return self.respond({'tasks':store.all(),'saved_at':timestamp()})
             if re.fullmatch(r'/api/tasks/[A-Z0-9-]+',path):

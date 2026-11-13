@@ -9,16 +9,17 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from .worklists import QUEUES, queue_of, normalize
 
 ROOT = Path(__file__).resolve().parent
 CATEGORIES = {"issue", "decision", "api", "qa", "task"}
 STATUSES = {"todo", "in_progress", "waiting_decision", "waiting_api", "needs_recheck", "blocked", "done", "archived"}
 PRIORITIES = {"P1", "P2", "P3"}
 QA_RESULTS = {"not_run", "passed", "failed", "blocked", "partial", "not_applicable"}
-TEXT_FIELDS = {"title", "summary", "detail", "next_action", "acceptance", "owner", "verification", "last_checked", "resolution"}
-LIST_FIELDS = {"areas", "blocked_by", "sources"}
+TEXT_FIELDS = {"title", "summary", "detail", "next_action", "acceptance", "owner", "verification", "last_checked", "resolution", "parent_id", "page_path"}
+LIST_FIELDS = {"areas", "blocked_by", "sources", "relations"}
 QA_FIELDS = {"preconditions", "steps", "expected", "actual", "evidence"}
-TASK_FIELDS = TEXT_FIELDS | LIST_FIELDS | {"category", "status", "priority", "qa_result", "qa"}
+TASK_FIELDS = TEXT_FIELDS | LIST_FIELDS | {"category", "status", "queue", "is_api_request", "priority", "qa_result", "qa"}
 
 
 def timestamp():
@@ -32,6 +33,12 @@ class BoardError(Exception):
 
 
 def validate(task):
+    if not isinstance(task.get('queue'),str) or task['queue'] not in QUEUES:
+        raise BoardError('업무 목록을 확인해주세요.')
+    if type(task.get('is_api_request')) is not bool:
+        raise BoardError('API 요청 표식은 true 또는 false여야 합니다.')
+    from .relations import validate_shape
+    validate_shape(task)
     if not isinstance(task.get("category"),str) or not isinstance(task.get("status"),str) or task["category"] not in CATEGORIES or task["status"] not in STATUSES:
         raise BoardError("분류 또는 상태를 확인해주세요.")
     if not isinstance(task.get("priority"),str) or not isinstance(task.get("qa_result"),str) or task["priority"] not in PRIORITIES or task["qa_result"] not in QA_RESULTS:
@@ -39,6 +46,16 @@ def validate(task):
     for key in TEXT_FIELDS:
         if not isinstance(task.get(key), str) or len(task[key]) > 30000:
             raise BoardError(f"{key}: 텍스트 길이 또는 형식을 확인해주세요.")
+    page = task['page_path']
+    if page:
+        try:
+            parsed = urlsplit(page)
+        except ValueError:
+            raise BoardError('유효한 페이지 경로나 http(s) 주소를 입력해주세요.')
+        relative = page.startswith('/') and not page.startswith('//')
+        absolute = parsed.scheme in {'http','https'} and bool(parsed.netloc) and '@' not in parsed.netloc
+        if len(page) > 2000 or any(ord(char) < 32 for char in page) or not (relative or absolute):
+            raise BoardError('페이지 경로는 /로 시작하는 경로나 인증정보 없는 http(s) 주소로 2000자 이내에 입력해주세요.')
     if not task["title"].strip() or len(task["title"]) > 200:
         raise BoardError("제목은 1~200자로 입력해주세요.")
     for key in ("areas", "blocked_by"):
@@ -63,7 +80,7 @@ def validate(task):
 
 
 def defaults():
-    return {**{key: "" for key in TEXT_FIELDS}, "category": "issue", "status": "todo", "priority": "P2", "qa_result": "not_run", "areas": [], "blocked_by": [], "sources": [], "qa": {key: "" for key in QA_FIELDS}}
+    return {**{key: "" for key in TEXT_FIELDS}, "category": "issue", "status": "todo", "queue":"issue", "is_api_request":False, "priority": "P2", "qa_result": "not_run", "areas": [], "blocked_by": [], "sources": [], "relations": [], "qa": {key: "" for key in QA_FIELDS}}
 
 
 class Store:
@@ -101,14 +118,23 @@ class Store:
             """)
             db.execute("BEGIN IMMEDIATE")
             if not db.execute("SELECT 1 FROM metadata WHERE key='seed_loaded'").fetchone():
+                structured = []
                 for source in (json.loads(Path(seed_path).read_text(encoding="utf-8")) if seed_path else []):
                     task = {**defaults(), **source}
                     task["qa"] = {**defaults()["qa"], **source.get("qa", {})}
+                    normalize(task,source)
                     validate(task)
+                    if task['parent_id'] or task['relations']:
+                        structured.append(task['id'])
                     now = timestamp()
                     data = json.dumps({key: task[key] for key in TASK_FIELDS}, ensure_ascii=False)
                     db.execute("INSERT INTO tasks VALUES (?,1,?,?,?)", (task["id"], data, now, now))
                     db.execute("INSERT INTO history(task_id,action,note,after_data,created_at) VALUES (?,?,?,?,?)", (task["id"], "created", "기존 기록에서 초기 등록", data, now))
+                if structured:
+                    from .relations import validate as validate_relations
+                    tasks = {r['id']:self.decode(r) for r in db.execute('SELECT * FROM tasks')}
+                    for key in structured:
+                        validate_relations(tasks,key)
                 db.execute("INSERT INTO metadata VALUES ('seed_loaded', ?)", (timestamp(),))
 
         from .records import Records
@@ -129,7 +155,11 @@ class Store:
 
     @staticmethod
     def decode(row):
-        return {**json.loads(row["data"]), **{key: row[key] for key in ("id", "version", "created_at", "updated_at")}}
+        data = json.loads(row["data"])
+        task = {**defaults(), **data, **{key: row[key] for key in ("id", "version", "created_at", "updated_at")}}
+        task["queue"] = queue_of(task)
+        task["is_api_request"] = data.get("is_api_request",data.get("category")=="api")
+        return task
 
     def all(self):
         with self.connect() as db:
@@ -141,7 +171,9 @@ class Store:
             if not row:
                 raise BoardError("항목을 찾을 수 없습니다.", 404)
             history = [dict(item) for item in db.execute("SELECT id,action,note,created_at FROM history WHERE task_id=? ORDER BY id DESC", (task_id,))]
-            return {"task": self.decode(row), "history": history}
+            from .relations import overview
+            tasks = {r["id"]:self.decode(r) for r in db.execute("SELECT * FROM tasks ORDER BY id")}
+            return {"task": self.decode(row), "history": history, "relationships":overview(tasks,task_id,limit=None)}
 
     def write(self, payload, task_id=None, *, connection=None):
         if not isinstance(payload, dict) or set(payload) - TASK_FIELDS - {"version", "note"}:
@@ -168,10 +200,12 @@ class Store:
                 task["qa"] = {**defaults()["qa"], **task["qa"]} if isinstance(task["qa"], dict) else task["qa"]
                 number = db.execute("SELECT COALESCE(MAX(CAST(SUBSTR(id,7) AS INTEGER)),0)+1 FROM tasks WHERE id GLOB 'LOCAL-[0-9]*'").fetchone()[0]
                 task_id, version = f"LOCAL-{number:04d}", 1
+            normalize(task,payload,previous)
             validate(task)
-            for dependency in task["blocked_by"]:
-                if dependency == task_id or not db.execute("SELECT 1 FROM tasks WHERE id=?", (dependency,)).fetchone():
-                    raise BoardError(f"선행 항목을 확인해주세요: {dependency}")
+            from .relations import validate as validate_relations
+            tasks = {r['id']:self.decode(r) for r in db.execute('SELECT * FROM tasks')}
+            tasks[task_id] = {**task,'id':task_id}
+            validate_relations(tasks,task_id)
             data = json.dumps({key: task[key] for key in TASK_FIELDS}, ensure_ascii=False)
             if previous:
                 db.execute("UPDATE tasks SET version=?,data=?,updated_at=? WHERE id=?", (version, data, now, task_id))
@@ -183,6 +217,46 @@ class Store:
             Records.history(db,task_id,'HIST-'+str(history.lastrowid),note,now)
         if connection is not None:
             return {"task": {**task, "id":task_id, "version":version, "created_at":previous["created_at"] if previous else now, "updated_at":now}}
+        return self.detail(task_id)
+
+    def relationships(self, task_id, limit=5, offset=0):
+        from .relations import overview
+        if (limit is not None and (type(limit) is not int or limit < 1)) or type(offset) is not int or offset < 0:
+            raise BoardError('관계 조회 개수와 시작 위치를 확인해주세요.')
+        return overview({task['id']:task for task in self.all()},task_id,limit,offset)
+
+    def link(self, task_id, target, kind, version, remove=False):
+        from .relations import KINDS
+        if not isinstance(kind,str) or kind not in KINDS or not isinstance(target,str) or not target:
+            raise BoardError('관계 유형과 대상 작업을 확인해주세요.')
+        with self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT * FROM tasks WHERE id=?',(task_id,)).fetchone()
+            if not row:
+                raise BoardError('작업을 찾을 수 없습니다.',404)
+            task = self.decode(row)
+            if type(version) is not int or version != task['version']:
+                raise BoardError('관계가 변경됐습니다. 최신 작업을 확인해주세요.',409)
+            change = {'version':version,'note':('관계 해제: ' if remove else '관계 연결: ')+kind+' → '+target}
+            if kind == 'parent':
+                if remove and task['parent_id'] != target:
+                    raise BoardError('해제할 상위 작업 관계가 없습니다.',409)
+                change['parent_id'] = '' if remove else target
+            elif kind == 'blocked_by':
+                if remove and target not in task['blocked_by']:
+                    raise BoardError('해제할 선행 작업 관계가 없습니다.',409)
+                change['blocked_by'] = [key for key in task['blocked_by'] if key != target] if remove else list(dict.fromkeys([*task['blocked_by'],target]))
+            else:
+                link = {'type':kind,'task_id':target}
+                if remove and link not in task['relations']:
+                    raise BoardError('해제할 작업 관계가 없습니다.',409)
+                links = list(task['relations'])
+                if remove:
+                    links.remove(link)
+                elif link not in links:
+                    links.append(link)
+                change['relations'] = links
+            self.write(change,task_id,connection=db)
         return self.detail(task_id)
 
     def backup(self):

@@ -7,8 +7,6 @@
   };
   // Navigation belongs to the app shell; project capabilities only affect availability.
   let sidebar=document.querySelector('.sidebar');
-  const filters=document.getElementById('navigation');
-  if(filters){filters.classList.add('board-categories');document.querySelector('.board .filters')?.before(filters);}
   if(!sidebar){sidebar=document.createElement('aside');document.body.prepend(sidebar);}
   let pickerInSidebar=sidebar.querySelector('.project-picker');
   const legacyPicker=sidebar.querySelector('#project-picker');

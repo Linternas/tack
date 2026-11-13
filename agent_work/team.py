@@ -51,7 +51,7 @@ class Team:
         payload={**payload,'autopilot':payload['execution_mode']!='manual','permissions':permissions(payload['permissions'])}
         for name,low,high in [('max_parallel',1,8),('max_rounds',0,20),('max_minutes',1,120),('max_tokens',1000,2000000)]:
             if type(payload[name]) is not int or not low<=payload[name]<=high:raise BoardError(f'{name}: {low}~{high} 범위가 필요합니다.')
-        if not isinstance(payload['runtime'],str) or payload['runtime'] not in {'codex-exec','codex-app-server'}:raise BoardError('실행 연결은 codex-exec 또는 codex-app-server여야 합니다.')
+        if not isinstance(payload['runtime'],str) or payload['runtime'] not in {'codex-exec','codex-app-server','herdr-codex-exec'}:raise BoardError('실행 연결은 codex-exec, codex-app-server, herdr-codex-exec 중 하나여야 합니다.')
         roles=payload['roles']
         if not isinstance(roles,dict) or not 3<=len(roles)<=60 or 'plan' not in roles:raise BoardError('plan 직원을 포함해 3~60명 직원이 필요합니다.')
         if any(not isinstance(role,str) or not re.fullmatch(r'[a-z][a-z0-9_]{0,39}',role) or role in {'user','tack'} for role in roles):raise BoardError('역할 ID는 영문 소문자로 시작하는 snake_case여야 합니다.')
