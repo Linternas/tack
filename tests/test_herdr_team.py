@@ -68,6 +68,68 @@ class HerdrTeamTests(unittest.TestCase):
         self.assertLessEqual(len(result['jobs'][0]['result']),1801)
 
 
+class HerdrCompletionRaceTests(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.process = HerdrProcess.__new__(HerdrProcess)
+        self.process.folder = Path(folder.name)
+        self.process.address = 'test-worker'
+        self.process.returncode = None
+        events = self.process.folder/'events'
+        events.touch()
+        self.process.reader = events.open('rb')
+        self.addCleanup(self.process.reader.close)
+
+    def test_completion_after_eof_drains_final_events(self):
+        events = self.process.folder/'events'
+        final = b'{"type":"item.completed"}\n{"type":"turn.completed"}\n'
+
+        def complete():
+            with events.open('ab') as writer:
+                writer.write(final)
+            self.process.returncode = 0
+            return 0
+
+        with patch.object(self.process, 'poll', side_effect=complete):
+            self.assertEqual(self.process.readline(), final.splitlines(keepends=True)[0])
+        self.assertEqual(self.process.readline(), final.splitlines(keepends=True)[1])
+        self.assertEqual(self.process.readline(), b'')
+
+    def test_completion_after_partial_line_rereads_whole_line(self):
+        events = self.process.folder/'events'
+        events.write_bytes(b'{"type":')
+
+        def complete():
+            with events.open('ab') as writer:
+                writer.write(b'"turn.completed"}\n')
+            return 0
+
+        with patch.object(self.process, 'poll', side_effect=complete):
+            self.assertEqual(self.process.readline(), b'{"type":"turn.completed"}\n')
+
+    def test_receipt_published_during_terminal_query_preserves_exit_code(self):
+        for code in (0, 3):
+            with self.subTest(code=code):
+                self.process.returncode = None
+                self.process.checked_at = 0
+                receipt = self.process.folder/'exit.json'
+                receipt.unlink(missing_ok=True)
+
+                def finished(*args, **kwargs):
+                    receipt.write_text(json.dumps({'exit_code': code}))
+                    return subprocess.CompletedProcess(args[0], 0, '{"state":"finished"}', '')
+
+                with patch('agent_work.herdr_process.subprocess.run', side_effect=finished) as query:
+                    self.assertEqual(self.process.poll(), code)
+                    self.assertEqual(self.process.poll(), code)
+                    query.assert_called_once()
+
+    def test_finished_terminal_without_receipt_fails(self):
+        with patch('agent_work.herdr_process.subprocess.run', return_value=subprocess.CompletedProcess([], 0, '{"state":"finished"}', '')):
+            self.assertEqual(self.process.poll(), 1)
+
+
 class HerdrProcessTests(unittest.TestCase):
     def launch(self, code, parent=None):
         real = subprocess

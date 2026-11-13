@@ -58,7 +58,8 @@ class HerdrProcess:
             self.checked_at = time.monotonic()
             info = subprocess.run(['hc', 'get', self.address, '--json'], capture_output=True, text=True, timeout=5, check=True)
             if json.loads(info.stdout)['state'] != 'live':
-                self.returncode = 1  # A lost worker without an exit receipt cannot establish success.
+                # The worker can publish its receipt while the terminal query is in flight.
+                self.returncode = json.loads(result.read_text())['exit_code'] if result.exists() else 1
         return self.returncode
 
     def readline(self):
@@ -68,7 +69,8 @@ class HerdrProcess:
             if line.endswith(b'\n'):
                 return line
             if self.poll() is not None:
-                return line
+                self.reader.seek(offset)
+                return self.reader.readline()
             self.reader.seek(offset)
             time.sleep(.05)
 
