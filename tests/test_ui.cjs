@@ -14,10 +14,29 @@ Module._load = originalLoad;
 const html = fs.readFileSync(path.join(__dirname, '../agent_work/assets/index.html'), 'utf8');
 const script = fs.readFileSync(path.join(__dirname, '../agent_work/assets/dashboard.js'), 'utf8');
 const tick = async () => { await new Promise(setImmediate); await new Promise(setImmediate); };
+const queueOf = task => {
+  if(['done','archived'].includes(task.status)) return task.status;
+  if(task.category==='qa') return 'qa';
+  if(task.category==='issue' || task.status==='needs_recheck') return 'issue';
+  if(task.status==='in_progress') return 'in_progress';
+  if(['blocked','waiting_api','waiting_decision'].includes(task.status) || ['api','decision'].includes(task.category)) return 'waiting';
+  return 'todo';
+};
+const normalizeQueue = (task,payload) => {
+  task.is_api_request = payload.is_api_request ?? task.is_api_request ?? (task.category==='api');
+  if(payload.queue && queueOf(task)!==payload.queue) {
+    if(['done','archived'].includes(payload.queue)) task.status=payload.queue;
+    else {
+      task.category=['qa','issue'].includes(payload.queue)?payload.queue:'task';
+      task.status={qa:'todo',issue:'needs_recheck',waiting:'blocked'}[payload.queue] || payload.queue;
+    }
+  }
+  task.queue=queueOf(task);return task;
+};
 const makeTask = (id, title, category, status = 'todo', options = {}) => ({
   id, title, category, status, priority: 'P2', owner: 'FE', areas: ['Scope 1'],
-  summary: '확인할 배경', detail: '확인한 계약', next_action: '다음 확인', acceptance: '기대하는 완료',
-  verification: '코드', last_checked: '2026-10-22', resolution: '', sources: [], blocked_by: [],
+  page_path:'', summary: '확인할 배경', detail: '확인한 계약', next_action: '다음 확인', acceptance: '기대하는 완료',
+  verification: '코드', last_checked: '2026-10-22', resolution: '', sources: [], blocked_by: [], parent_id:'', relations:[],
   qa_result: 'not_run', qa: { preconditions: '테스트 법인 준비', steps: '입력 후 재조회', expected: '값 유지', actual: '', evidence: '' },
   version: 1, created_at: '2026-10-22T00:00:00Z', updated_at: '2026-10-22T00:00:00Z', ...options,
 });
@@ -42,6 +61,21 @@ async function setup(context, fixture) {
     makeTask('QA-002', '선행 결정 필요한 QA', 'qa', 'todo', { blocked_by: ['DEC-001'] }),
     makeTask('DONE-001', '처리한 문제', 'issue', 'done', { resolution: '수정·자동 검증' }),
   ];
+  const relationships = (id) => {
+    const items=[];
+    const add=(type,target,outgoing)=>{
+      const task=records.find(t=>t.id===target);
+      if(task) items.push({type,outgoing,id:task.id,title:task.title,queue:queueOf(task),status:task.status,version:task.version});
+    };
+    const source=records.find(t=>t.id===id);
+    if(source.parent_id) add('parent',source.parent_id,true);
+    for(const item of source.relations || []) add(item.type,item.task_id,true);
+    for(const item of records) {
+      if(item.parent_id===id) add('child',item.id,false);
+      for(const link of item.relations || []) if(link.task_id===id) add({duplicate_of:'duplicated_by',superseded_by:'supersedes',relates_to:'relates_to'}[link.type],item.id,false);
+    }
+    return {items,counts:{}};
+  };
   const calls = [];
   let forceConflict = false;
   let offline = false;
@@ -51,23 +85,33 @@ async function setup(context, fixture) {
     let status = 200;
     let data;
     const method = options.method || 'GET';
-    if (url === '/api/tasks' && method === 'GET') data = { tasks: structuredClone(records), saved_at: '2026-10-22T01:00:00Z' };
+    if (url === '/api/tasks' && method === 'GET') data = { tasks: records.map(task=>({...structuredClone(task),queue:queueOf(task),is_api_request:task.is_api_request ?? (task.category==='api')})), saved_at: '2026-10-22T01:00:00Z' };
     else if (url.startsWith('/api/source')) data = { text: '<script>unsafe()</script> 원문' };
+    else if (url.endsWith('/relations') && method === 'POST') {
+      const payload=JSON.parse(options.body);const task=records.find(t=>t.id===url.split('/').at(-2));
+      if(forceConflict || task.version!==payload.version) {status=409;data={error:'다른 창에서 관계가 변경됐습니다.'};}
+      else {
+        if(payload.type==='parent') task.parent_id=payload.remove?'':payload.target;
+        else if(payload.type==='blocked_by') task.blocked_by=payload.remove?task.blocked_by.filter(id=>id!==payload.target):[...task.blocked_by,payload.target];
+        else task.relations=payload.remove?task.relations.filter(link=>link.type!==payload.type || link.task_id!==payload.target):[...task.relations,{type:payload.type,task_id:payload.target}];
+        task.version++;task.queue=queueOf(task);data={task:structuredClone(task),history:[],relationships:relationships(task.id)};
+      }
+    }
     else if (method === 'PATCH' || method === 'POST') {
       const payload = JSON.parse(options.body);
       const id = url.split('/').at(-1);
       const index = records.findIndex((task) => task.id === id);
-      const candidate = index >= 0 ? { ...records[index], ...payload } : payload;
+      const candidate = normalizeQueue(index >= 0 ? { ...records[index], ...payload } : {category:'task',status:'todo',...payload},payload);
       if (forceConflict) { status = 409; data = { error: '다른 창에서 이미 변경됐습니다.' }; }
       else if (candidate.category === 'qa' && candidate.status === 'done' && (!['passed', 'not_applicable'].includes(candidate.qa_result) || !candidate.qa.actual.trim())) { status = 400; data = { error: 'QA 완료에는 통과 또는 해당 없음 판정과 실제 결과가 필요합니다.' }; }
       else {
-        const task = index >= 0 ? { ...records[index], ...payload, version: records[index].version + 1 } : makeTask('LOCAL-0001', payload.title, payload.category, payload.status, payload);
+        const task = index >= 0 ? {...candidate,version:records[index].version+1} : makeTask('LOCAL-0001',candidate.title,candidate.category,candidate.status,candidate);
         if (index >= 0) records[index] = task; else records.push(task);
         data = { task: structuredClone(task), history: [] };
       }
     } else {
       const task = records.find((item) => item.id === url.split('/').at(-1));
-      data = { task: structuredClone(task), history: [{ action: 'created', note: '초기 등록', created_at: task.created_at }] };
+      data = { task: {...structuredClone(task),queue:queueOf(task),is_api_request:task.is_api_request ?? (task.category==='api')}, history: [{ action: 'created', note: '초기 등록', created_at: task.created_at }],relationships:relationships(task.id) };
     }
     return { ok: status < 400, status, json: async () => data };
   };
@@ -82,15 +126,22 @@ async function setup(context, fixture) {
   return { window, document, $, rows, change, click, submit, calls, records, clipboard, conflict: () => { forceConflict = true; }, offline: () => { offline = true; } };
 }
 
-test('initial view separates open tasks, completed history and actionable dependencies', async (t) => {
+test('initial view separates ongoing work from completed history', async (t) => {
   const ui = await setup(t);
   assert.equal(ui.rows().length, 5);
-  assert.equal(ui.$('actionable-count').textContent, '2건');
+  assert.equal(ui.$('status-filter'), null);
+  assert.equal(ui.$('actionable-toggle'), null);
+  assert.equal(ui.$('include-closed'), null);
+  assert.equal(ui.$('navigation'), null);
   assert.equal(ui.rows().includes('DONE-001'), false);
-  await ui.click('#actionable-toggle');
-  assert.deepEqual(ui.rows(), ['ISSUE-001', 'QA-001']);
-  await ui.click('[data-mode="done"]');
+  await ui.click('#metrics [data-queue="qa"]');
+  assert.deepEqual(ui.rows(), ['QA-001', 'QA-002']);
+  await ui.change('record-view', 'done');
   assert.deepEqual(ui.rows(), ['DONE-001']);
+  assert.equal(ui.document.querySelector('#metrics [aria-pressed="true"]'), null);
+  await ui.click('#reset-filters');
+  assert.equal(ui.rows().length, 5);
+  assert.equal(ui.$('record-view').value, 'all');
 });
 
 test('search, category and status filters apply without fetching product APIs', async (t) => {
@@ -98,10 +149,12 @@ test('search, category and status filters apply without fetching product APIs', 
   await ui.change('search', '요청');
   assert.deepEqual(ui.rows(), ['ISSUE-001']);
   await ui.click('#reset-filters');
-  await ui.click('[data-mode="qa"]');
+  await ui.click('#metrics [data-queue="qa"]');
   assert.equal(ui.rows().length, 2);
-  await ui.change('status-filter', 'waiting_api');
-  assert.equal(ui.rows().length, 0);
+  await ui.click('#metrics [data-queue="waiting"]');
+  assert.deepEqual(new Set(ui.rows()),new Set(['API-001','DEC-001']));
+  await ui.change('search','일치하지않음');
+  assert.equal(ui.rows().length,0);
   assert.ok(ui.calls.every((call) => call.url.startsWith('/api/')));
 });
 
@@ -128,7 +181,7 @@ test('issue copy uses the current detail and exports agent context without UI or
   assert.equal(ui.clipboard.length, 1);
   const text = ui.clipboard[0];
   assert.match(text, /^# ISSUE-001 · 조직 조회 갱신 시 열린 이력이 닫힘\n/);
-  for (const content of ['국가 조회 갱신 시 이력과 필터가 사라짐', 'OrganizationManagementGrid의 history cell', '이력 열을 안정화하고 재조회 회귀 검증', '같은 조직의 조회 갱신 시 열린 이력과 필터 유지', '실제 브라우저 QA 미실행', 'DEC-001 · 담당자 정책 (기획 결정 대기)', 'apps/ctms/src/features/inventory/organization/OrganizationManagementGrid.tsx', 'https://github.com/iesg-stuff/solution_fe/pull/3734']) {
+  for (const content of ['국가 조회 갱신 시 이력과 필터가 사라짐', 'OrganizationManagementGrid의 history cell', '이력 열을 안정화하고 재조회 회귀 검증', '같은 조직의 조회 갱신 시 열린 이력과 필터 유지', '실제 브라우저 QA 미실행', 'DEC-001 · 담당자 정책 (대기)', 'apps/ctms/src/features/inventory/organization/OrganizationManagementGrid.tsx', 'https://github.com/iesg-stuff/solution_fe/pull/3734']) {
     assert.ok(text.includes(content), content);
   }
   for (const content of ['내용·상태 수정', '에이전트용 복사', '변경 이력', '초기 등록', 'INTERNAL_OWNER', 'created_at', 'updated_at', 'version']) {
@@ -190,7 +243,7 @@ test('editing persists a versioned update and refreshes detail', async (t) => {
   await ui.click('[data-open="ISSUE-001"]');
   await ui.click('[data-edit="ISSUE-001"]');
   const fields = ui.$('task-form').elements;
-  fields.namedItem('status').value = 'done';
+  fields.namedItem('queue').value = 'done';
   fields.namedItem('resolution').value = '원인 확인 후 수정';
   await ui.submit();
   const sent = ui.calls.find((call) => call.method === 'PATCH');
@@ -204,7 +257,7 @@ test('QA failure keeps the draft instead of marking an unexecuted test passed', 
   const ui = await setup(t);
   await ui.click('[data-open="QA-001"]');
   await ui.click('[data-edit="QA-001"]');
-  ui.$('task-form').elements.namedItem('status').value = 'done';
+  ui.$('task-form').elements.namedItem('queue').value = 'done';
   ui.$('task-form').elements.namedItem('resolution').value = '자동 테스트만 확인';
   await ui.submit();
   assert.equal(ui.$('editor').open, true);
@@ -214,7 +267,7 @@ test('QA failure keeps the draft instead of marking an unexecuted test passed', 
 
 test('manual QA completion saves results and moves the record out of the remaining QA list', async (t) => {
   const ui = await setup(t);
-  await ui.click('[data-mode="qa"]');
+  await ui.click('#metrics [data-queue="qa"]');
   assert.equal(ui.document.querySelector('[data-complete-qa="ISSUE-001"]'), null);
   await ui.click('[data-complete-qa="QA-001"]');
   assert.equal(ui.$('qa-completion').open, true);
@@ -227,7 +280,7 @@ test('manual QA completion saves results and moves the record out of the remaini
   await ui.submit('qa-completion-form');
   const payload = JSON.parse(ui.calls.find((call) => call.method === 'PATCH').body);
   assert.equal(payload.version, 1);
-  assert.equal(payload.status, 'done');
+  assert.equal(payload.queue, 'done');
   assert.equal(payload.qa_result, 'passed');
   assert.equal(payload.last_checked, '2026-10-21');
   assert.equal(payload.qa.steps, '입력 후 재조회');
@@ -237,12 +290,12 @@ test('manual QA completion saves results and moves the record out of the remaini
   assert.match(payload.note, /사용자 QA 완료 처리/);
   assert.equal(ui.$('qa-completion').open, false);
   assert.deepEqual(ui.rows(), ['QA-002']);
-  assert.equal(ui.document.querySelector('#navigation [data-mode="qa"] .nav-count').textContent, '1');
+  assert.equal(ui.document.querySelector('#metrics [data-queue="qa"]').getAttribute('aria-pressed'),'true');
   assert.equal(ui.document.querySelector('#detail-content [data-complete-qa]'), null);
   assert.equal(ui.records.find((task) => task.id === 'QA-002').qa_result, 'not_run');
   await ui.click('#close-detail');
   await ui.click('#refresh');
-  await ui.click('[data-mode="done"]');
+  await ui.change('record-view', 'done');
   assert.ok(ui.rows().includes('QA-001'));
   await ui.click('[data-open="QA-001"]');
   assert.match(ui.$('detail-content').textContent, /QA 환경: 저장 후 새로고침해도 입력값 유지/);
@@ -350,61 +403,225 @@ test('connection failures leave existing records visible and display the error',
 });
 
 
-test('status cards count states across categories and replace competing filters', async (t) => {
-  const fixture = [
-    makeTask('DEC-TODO', '기획 분류의 할 일', 'decision', 'todo'),
-    makeTask('ISSUE-RUN', '진행 작업', 'issue', 'in_progress'),
-    makeTask('QA-RECHECK', '재확인 작업', 'qa', 'needs_recheck'),
-    makeTask('API-BLOCKED', '차단 작업', 'api', 'blocked'),
-    makeTask('ISSUE-API', '계약 대기', 'issue', 'waiting_api'),
-    makeTask('TASK-DEC', '결정 대기', 'task', 'waiting_decision'),
-    makeTask('DONE', '완료 기록', 'decision', 'done'),
-    makeTask('ARCHIVED', '보관 기록', 'decision', 'archived'),
+test('queue cards form one disjoint partition and exclude QA and issues from todo',async t=>{
+  const fixture=[
+    makeTask('TASK-TODO','착수할 작업','task','todo'),
+    makeTask('ISSUE-RUN','조사할 문제','issue','in_progress'),
+    makeTask('QA-TODO','나중에 할 QA','qa','todo'),
+    makeTask('QA-RUN','수행 중인 QA','qa','in_progress'),
+    makeTask('API-WAIT','계약 대기','api','todo'),
+    makeTask('TASK-WAIT','결정 대기','task','waiting_decision'),
+    makeTask('TASK-RUN','구현 중','task','in_progress'),
+    makeTask('DONE','완료 기록','qa','done'),
+    makeTask('ARCHIVED','보관 기록','issue','archived'),
   ];
-  const ui = await setup(t, fixture);
-  assert.equal(ui.$('metrics').querySelectorAll('[data-status]').length, 6);
-  assert.equal(ui.document.querySelector('#navigation [data-mode="decision"] .nav-count').textContent, '1');
-  for (const task of fixture.slice(0, 6)) {
-    await ui.click('#navigation [data-mode="qa"]');
-    await ui.change('search', '일치하지않는검색어');
-    await ui.change('area-filter', 'Scope 1');
-    await ui.change('priority-filter', 'P1');
-    await ui.click('#actionable-toggle');
-    await ui.change('include-closed', '');
-    ui.$('include-closed').checked = true;
-    await ui.click(`#metrics [data-status="${task.status}"]`);
-    assert.deepEqual(ui.rows(), [task.id]);
-    assert.equal(ui.$('result-count').textContent, '1건');
-    const card = ui.document.querySelector(`#metrics [data-status="${task.status}"]`);
-    assert.equal(card.querySelector('.metric-number').textContent, '1');
-    assert.equal(card.getAttribute('aria-pressed'), 'true');
-    assert.equal(ui.$('include-closed').checked, false);
+  const ui=await setup(t,fixture);
+  assert.equal(ui.$('category-filter'),null);
+  assert.equal(ui.$('edit-category'),null);
+  assert.equal(ui.$('edit-status'),null);
+  assert.equal(ui.$('metrics').querySelectorAll('[data-queue]').length,5);
+  for(const queue of ['todo','in_progress','issue','qa','waiting']) {
+    await ui.change('search','일치하지않는검색어');await ui.change('priority-filter','P1');await ui.change('record-view','done');
+    await ui.click(`#metrics [data-queue="${queue}"]`);
+    const expected=fixture.filter(task=>queueOf(task)===queue).map(task=>task.id);
+    assert.deepEqual(new Set(ui.rows()),new Set(expected));
+    const card=ui.document.querySelector(`#metrics [data-queue="${queue}"]`);
+    assert.equal(Number(card.querySelector('.metric-number').textContent),expected.length);
+    assert.equal(ui.$('result-count').textContent,`${expected.length}건`);
+    assert.equal(card.getAttribute('aria-pressed'),'true');
   }
-  await ui.click('#navigation [data-mode="decision"]');
-  assert.deepEqual(ui.rows(), ['DEC-TODO']);
-  await ui.click('#navigation [data-mode="done"]');
-  assert.deepEqual(ui.rows(), ['DONE']);
-  await ui.click('#navigation [data-mode="archived"]');
-  assert.deepEqual(ui.rows(), ['ARCHIVED']);
-  ui.records[0].status = 'waiting_decision';
-  await ui.click('#refresh');
-  assert.equal(ui.document.querySelector('#metrics [data-status="todo"] .metric-number').textContent, '0');
-  assert.equal(ui.document.querySelector('#metrics [data-status="waiting_decision"] .metric-number').textContent, '2');
-  await ui.click('#metrics [data-status="todo"]');
-  assert.deepEqual(ui.rows(), []);
+  await ui.click('#metrics [data-queue="todo"]');assert.deepEqual(ui.rows(),['TASK-TODO']);
+  await ui.change('record-view','done');assert.deepEqual(ui.rows(),['DONE']);
+  await ui.change('record-view','archived');assert.deepEqual(ui.rows(),['ARCHIVED']);
 });
 
 test('project API, CLI counts, status cards and clicked rows agree', {skip: !process.env.TACK_BOARD_PARITY_FIXTURE}, async (t) => {
   const fixture = JSON.parse(fs.readFileSync(process.env.TACK_BOARD_PARITY_FIXTURE, 'utf8'));
   const ui = await setup(t, fixture.tasks);
-  for (const card of [...ui.$('metrics').querySelectorAll('[data-status]')]) {
-    const status = card.dataset.status;
-    const expected = fixture.counts[status] || 0;
-    assert.equal(Number(card.querySelector('.metric-number').textContent), expected, status);
-    await ui.click(`#metrics [data-status="${status}"]`);
-    assert.equal(ui.rows().length, expected, status);
-    assert.equal(ui.$('result-count').textContent, `${expected}건`, status);
-    const ids = fixture.tasks.filter(task => task.status === status).map(task => task.id).sort();
-    assert.deepEqual(ui.rows().sort(), ids, status);
+  for (const card of [...ui.$('metrics').querySelectorAll('[data-queue]')]) {
+    const queue = card.dataset.queue;
+    const expected = fixture.counts[queue] || 0;
+    assert.equal(Number(card.querySelector('.metric-number').textContent), expected, queue);
+    await ui.click(`#metrics [data-queue="${queue}"]`);
+    assert.equal(ui.rows().length, expected, queue);
+    assert.equal(ui.$('result-count').textContent, `${expected}건`, queue);
+    const ids = fixture.tasks.filter(task => task.queue === queue).map(task => task.id).sort();
+    assert.deepEqual(ui.rows().sort(), ids, queue);
   }
+});
+
+test('full task ID search finds an archived task instead of an open task referencing its ID', async (t) => {
+  const tasks = [
+    makeTask('LOCAL-0353','이전 전환 작업','task','archived'),
+    makeTask('LOCAL-0406','통합 전환 작업','task','todo',{detail:'LOCAL-0353의 전환 범위를 통합한다.'}),
+    makeTask('LOCAL-03530','다른 ID','task'),
+  ];
+  const ui = await setup(t,tasks);
+  await ui.click('#metrics [data-queue="todo"]');
+  await ui.change('priority-filter','P1');
+  await ui.change('search',' local-0353 ');
+  assert.deepEqual(ui.rows(),['LOCAL-0353']);
+  assert.equal(ui.$('record-view').value,'archived');
+  assert.equal(ui.$('category-filter'),null);
+  assert.equal(ui.$('priority-filter').value,'');
+  assert.equal(ui.$('result-count').textContent,'1건');
+  await ui.click('[data-open="LOCAL-0353"]');
+  assert.ok(ui.$('detail-content').textContent.includes('이전 전환 작업'));
+  assert.ok(ui.calls.some(call => call.url==='/api/tasks/LOCAL-0353'));
+  assert.equal(ui.calls.some(call => ['POST','PATCH'].includes(call.method)),false);
+});
+
+test('ID search handles completed and missing IDs while free text still searches task content', async (t) => {
+  const ui = await setup(t,[
+    makeTask('LOCAL-0353','완료된 작업','task','done',{resolution:'검증 완료'}),
+    makeTask('LOCAL-0406','진행 작업','task','todo',{detail:'통합 대상 LOCAL-9999 및 사용자 입력 계약'}),
+  ]);
+  await ui.change('search','LOCAL-0353');
+  assert.deepEqual(ui.rows(),['LOCAL-0353']);
+  assert.equal(ui.$('record-view').value,'done');
+  await ui.change('search','LOCAL-0406');
+  assert.deepEqual(ui.rows(),['LOCAL-0406']);
+  assert.equal(ui.$('record-view').value,'all');
+  await ui.change('search','LOCAL-040');
+  assert.deepEqual(ui.rows(),['LOCAL-0406']);
+  await ui.change('search','LOCAL-9999');
+  assert.deepEqual(ui.rows(),[]);
+  await ui.change('search','사용자 입력');
+  assert.deepEqual(ui.rows(),['LOCAL-0406']);
+});
+
+
+test('subtasks are created with the selected parent and can navigate back to it',async t=>{
+  const ui=await setup(t);
+  await ui.click('[data-open="ISSUE-001"]');
+  await ui.click('[data-add-subtask]');
+  assert.equal(ui.$('task-form').elements.parent_id.value,'ISSUE-001');
+  assert.equal(ui.$('task-form').elements.queue.value,'todo');
+  ui.$('task-form').elements.title.value='독립 FE 구현';
+  await ui.submit();
+  const child=ui.records.find(task=>task.title==='독립 FE 구현');
+  assert.equal(child.parent_id,'ISSUE-001');
+  assert.ok(ui.$('detail-content').textContent.includes('상위 작업'));
+  await ui.click('#detail-content [data-open="ISSUE-001"]');
+  assert.ok(ui.$('detail-content').textContent.includes('하위 작업'));
+});
+
+test('replacement links show inverse navigation, copy context, and versioned removal',async t=>{
+  const ui=await setup(t);
+  await ui.click('[data-open="ISSUE-001"]');
+  await ui.change('relation-type','superseded_by');
+  await ui.change('relation-target','DEC-001');
+  await ui.click('#relation-add');
+  assert.ok(ui.$('detail-content').textContent.includes('통합·대체 대상'));
+  await ui.click('#detail-content [data-copy-task]');
+  assert.match(ui.clipboard[0],/통합·대체 대상 · DEC-001/);
+  await ui.click('#detail-content [data-open="DEC-001"]');
+  assert.ok(ui.$('detail-content').textContent.includes('통합·대체한 작업'));
+  await ui.click('#detail-content [data-open="ISSUE-001"]');
+  await ui.click('[data-unlink="superseded_by"]');
+  assert.equal(ui.records[0].relations.length,0);
+  assert.equal(ui.records[0].version,3);
+});
+
+test('relation version conflict preserves the entered target and reports the failure',async t=>{
+  const ui=await setup(t);await ui.click('[data-open="ISSUE-001"]');
+  await ui.change('relation-type','relates_to');await ui.change('relation-target','DEC-001');ui.conflict();
+  await ui.click('#relation-add');
+  assert.equal(ui.$('relation-target').value,'DEC-001');
+  assert.equal(ui.$('relation-error').hidden,false);
+  assert.equal(ui.records[0].relations.length,0);
+});
+
+test('all-records view includes open, done and archived tasks with common filters',async t=>{
+  const ui=await setup(t,[
+    makeTask('LOCAL-0001','공통 진행','task','todo'),
+    makeTask('LOCAL-0002','공통 완료','decision','done',{resolution:'검증'}),
+    makeTask('LOCAL-0003','공통 보관','decision','archived'),
+  ]);
+  assert.deepEqual(ui.rows(),['LOCAL-0001']);
+  await ui.change('record-view','everything');
+  assert.deepEqual(new Set(ui.rows()),new Set(['LOCAL-0001','LOCAL-0002','LOCAL-0003']));
+  assert.equal(ui.$('list-title').textContent,'전체 목록');
+  assert.equal(ui.$('result-count').textContent,'3건');
+  await ui.change('area-filter','Scope 1');
+  assert.equal(ui.rows().length,3);
+  await ui.change('search','공통');
+  assert.equal(ui.rows().length,3);
+  await ui.change('search','LOCAL-0003');
+  assert.deepEqual(ui.rows(),['LOCAL-0003']);
+  assert.equal(ui.$('record-view').value,'everything');
+  await ui.change('search','');await ui.click('#refresh');
+  assert.equal(ui.rows().length,3);
+  assert.equal(ui.$('record-view').value,'everything');
+  await ui.click('#metrics [data-queue="todo"]');
+  assert.deepEqual(ui.rows(),['LOCAL-0001']);
+  assert.equal(ui.$('record-view').value,'all');
+  assert.equal(ui.$('list-title').textContent,'할 일');
+});
+
+
+test('API-only filter works across queues and closed records without restoring a classification axis',async t=>{
+  const ui=await setup(t,[
+    makeTask('API-001','API 계약 요청','api','waiting_api'),
+    makeTask('LOCAL-0002','진행할 API 요청','task','todo',{is_api_request:true}),
+    makeTask('LOCAL-0003','완료한 API 요청','task','done',{is_api_request:true,resolution:'검증'}),
+    makeTask('LOCAL-0004','일반 작업','task','todo'),
+  ]);
+  ui.$('api-only').checked=true;await ui.change('api-only',true);
+  assert.deepEqual(new Set(ui.rows()),new Set(['API-001','LOCAL-0002']));
+  assert.match(ui.$('list-title').textContent,/API 요청/);
+  assert.equal(ui.document.querySelector('#metrics [data-queue="todo"] .metric-number').textContent,'1');
+  assert.equal(ui.document.querySelector('#metrics [data-queue="waiting"] .metric-number').textContent,'1');
+  await ui.click('#metrics [data-queue="todo"]');
+  assert.deepEqual(ui.rows(),['LOCAL-0002']);assert.equal(ui.$('api-only').checked,true);
+  await ui.change('record-view','everything');
+  assert.deepEqual(new Set(ui.rows()),new Set(['API-001','LOCAL-0002','LOCAL-0003']));
+  await ui.change('search','LOCAL-0004');
+  assert.deepEqual(ui.rows(),['LOCAL-0004']);assert.equal(ui.$('api-only').checked,false);
+  await ui.click('#reset-filters');assert.equal(ui.$('api-only').checked,false);
+});
+
+test('API request marker is edited separately and survives a queue change',async t=>{
+  const ui=await setup(t,[makeTask('API-001','요청','api','waiting_api')]);
+  await ui.click('[data-open="API-001"]');await ui.click('[data-edit="API-001"]');
+  const fields=ui.$('task-form').elements;
+  assert.equal(fields.is_api_request.checked,true);
+  fields.queue.value='todo';await ui.submit();
+  assert.equal(ui.records[0].queue,'todo');assert.equal(ui.records[0].is_api_request,true);
+  ui.$('api-only').checked=true;await ui.change('api-only',true);
+  assert.deepEqual(ui.rows(),['API-001']);
+  await ui.click('#add-task');
+  assert.equal(ui.$('task-form').elements.is_api_request.checked,true);
+  ui.$('task-form').elements.title.value='새 API 요청';await ui.submit();
+  const created=ui.records.find(task=>task.title==='새 API 요청');assert.equal(created.is_api_request,true);
+  await ui.click(`[data-edit="${created.id}"]`);
+  ui.$('task-form').elements.is_api_request.checked=false;await ui.submit();
+  assert.equal(ui.records.find(task=>task.id===created.id).is_api_request,false);
+  assert.deepEqual(ui.rows(),['API-001']);
+});
+
+
+test('page route is visible, searchable, copied and saved by the issue editor',async t=>{
+  const route='/ctms/workspaces/[id]/scope1?org-item-id=104&tab=history';
+  const ui=await setup(t,[makeTask('ISSUE-001','목록 이력 유지','issue','todo',{page_path:route})]);
+  assert.equal(ui.document.querySelector('.task-page-path').textContent,route);
+  await ui.change('search','/ctms/workspaces');assert.deepEqual(ui.rows(),['ISSUE-001']);
+  await ui.click('[data-open="ISSUE-001"]');
+  assert.equal(ui.document.querySelector('.detail-page-path code').textContent,route);
+  await ui.click('[data-copy-task]');assert.ok(ui.clipboard[0].includes('## 페이지 경로\n'+route));
+  await ui.click('[data-edit="ISSUE-001"]');
+  assert.equal(ui.$('task-form').elements.page_path.value,route);
+  ui.$('task-form').elements.page_path.value='/ctms/workspaces/3/workplaces';await ui.submit();
+  const sent=JSON.parse(ui.calls.find(call=>call.method==='PATCH').body);
+  assert.equal(sent.page_path,'/ctms/workspaces/3/workplaces');
+  assert.equal(ui.document.querySelector('.detail-page-path code').textContent,sent.page_path);
+});
+
+test('page routes are escaped as text and legacy issues can add a route',async t=>{
+  const unsafe='/ctms/<svg onload="alert(1)">?tab=a&value=b';
+  const ui=await setup(t,[makeTask('ISSUE-001','기존 작업','issue','todo',{page_path:unsafe})]);
+  assert.equal(ui.document.querySelector('.task-page-path svg'),null);
+  await ui.click('[data-open="ISSUE-001"]');
+  assert.equal(ui.document.querySelector('.detail-page-path code').textContent,unsafe);
+  assert.equal(ui.document.querySelector('.detail-page-path svg'),null);
 });

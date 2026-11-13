@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from .projects import by_id, git_value, projects, resolve
 from .store import BoardError, Store, CATEGORIES, STATUSES, TEXT_FIELDS
+from .worklists import QUEUES
 
 
 def emit(value):
@@ -20,10 +21,23 @@ def fields(value, keys):
 def write_result(result, full, key='task'):
     if full:
         return result
-    keys = ('id', 'version', 'status', 'updated_at')
+    keys = ('id', 'version', 'queue' if key == 'task' else 'status', 'updated_at')
     if key == 'session':
         keys += ('task_id',)
     return {key: fields(result[key], keys)}
+
+
+def relation_view(data):
+    return {**data,'items':[{k:v for k,v in item.items() if k!='status'} for item in data['items']]}
+
+
+def task_view(data):
+    return {**data,'task':{k:v for k,v in data['task'].items() if k not in {'category','status'}},
+            'relationships':relation_view(data['relationships'])}
+
+
+def search_view(data):
+    return {**data,'matches':[{k:v for k,v in item.items() if k not in {'category','status'}} for item in data['matches']]}
 
 
 def positive(value):
@@ -61,6 +75,20 @@ def parser():
     p.add_argument('--project',help='전역 프로젝트 ID')
     sub=p.add_subparsers(dest='command',required=True)
     update=sub.add_parser('update',help='초기 설정을 재실행하지 않고 설치본 일괄 갱신');update.add_argument('--source',type=Path,help='개발용 로컬 Tack 소스 폴더')
+    herdr=sub.add_parser('herdr',help='Herdr 실행 세션과 작업 연결').add_subparsers(dest='herdr_action',required=True)
+    for action in ('inspect','bind','unbind'):
+        item=herdr.add_parser(action);item.add_argument('address')
+        if action=='inspect':item.add_argument('--query',default='')
+        else:
+            item.add_argument('--session',required=True)
+            item.add_argument('--from-task',required=action=='unbind')
+            if action=='bind':item.add_argument('task_id')
+    office=herdr.add_parser('team',help='Herdr에서 프로젝트 오케스트레이션 운영')
+    office.add_argument('--folder',required=True)
+    office.add_argument('--action',choices=['status','connect','create','assign','approve','run','pause','reply','retry','accept'],default='status')
+    office.add_argument('--goal')
+    office.add_argument('--parent',help='역할 직원을 표시할 Herdr 원본 터미널')
+    office.add_argument('--payload',default='{}')
     init=sub.add_parser('init'); init.add_argument('--local',action='store_true'); init.add_argument('--name'); init.add_argument('--link'); init.add_argument('--source-root',action='append')
     sub.add_parser('projects').add_argument('--all',action='store_true',help='보관 프로젝트 포함')
     project_actions=sub.add_parser('project').add_subparsers(dest='project_action',required=True)
@@ -71,15 +99,18 @@ def parser():
             item.add_argument('--confirm',required=True,help='삭제할 프로젝트 이름');item.add_argument('--include-backups',action='store_true')
     status=sub.add_parser('status'); status.add_argument('--all',action='store_true')
     status.add_argument('--full',action='store_true',help='기존 상세 목록 출력')
-    status.add_argument('--status',type=lambda value: choices(value, STATUSES),help='쉼표로 구분한 상태')
-    status.add_argument('--category',type=lambda value: choices(value, CATEGORIES),help='쉼표로 구분한 분류')
+    status.add_argument('--api-only',action='store_true',help='API 요청 항목만 조회')
+    status.add_argument('--queue',type=lambda value: choices(value,QUEUES),help='업무 목록 · 쉼표 구분')
+    status.add_argument('--status',type=lambda value: choices(value, STATUSES),help=argparse.SUPPRESS)
+    status.add_argument('--category',type=lambda value: choices(value, CATEGORIES),help=argparse.SUPPRESS)
     status.add_argument('--search',help='ID·제목·작업 내용에서 대소문자 구분 없이 검색')
     status.add_argument('--limit',type=positive,default=10)
     status.add_argument('--offset',type=offset,default=0)
     search=sub.add_parser('search',help='작업·결정·검증·체크포인트 검색')
     search.add_argument('query');search.add_argument('--limit',type=positive,default=5)
-    search.add_argument('--status',type=lambda value: choices(value,STATUSES))
-    search.add_argument('--category',type=lambda value: choices(value,CATEGORIES))
+    search.add_argument('--queue',type=lambda value: choices(value,QUEUES),help='업무 목록 · 쉼표 구분')
+    search.add_argument('--status',type=lambda value: choices(value,STATUSES),help=argparse.SUPPRESS)
+    search.add_argument('--category',type=lambda value: choices(value,CATEGORIES),help=argparse.SUPPRESS)
     from .records import KINDS
     search.add_argument('--kind',choices=sorted(KINDS));search.add_argument('--all',action='store_true',help='보관 작업 포함')
     search.add_argument('--all-projects',action='store_true',help='등록된 프로젝트 전체 검색')
@@ -92,10 +123,17 @@ def parser():
     record_list.add_argument('--limit',type=positive,default=5);record_list.add_argument('--offset',type=offset,default=0)
     record_show=record.add_parser('show');record_show.add_argument('id');record_show.add_argument('--full',action='store_true')
     task=sub.add_parser('task').add_subparsers(dest='action',required=True)
-    add=task.add_parser('add'); add.add_argument('title'); add.add_argument('--category',default='task'); add.add_argument('--json',dest='input')
+    add=task.add_parser('add'); add.add_argument('title'); add.add_argument('--category',default='task',help=argparse.SUPPRESS); add.add_argument('--page',type=str.strip,help='UI 페이지 경로 또는 http(s) 주소'); add.add_argument('--api-request',action='store_true',help='API 요청 표식'); add.add_argument('--parent',help='상위 작업 ID'); add.add_argument('--queue',choices=sorted(QUEUES),help='업무 목록'); add.add_argument('--json',dest='input')
     show=task.add_parser('show'); show.add_argument('id');show.add_argument('--full',action='store_true');show.add_argument('--section')
     update=task.add_parser('update'); update.add_argument('id'); update.add_argument('--json',dest='input',required=True)
     start=task.add_parser('start'); start.add_argument('id'); start.add_argument('--version',required=True,type=int)
+    related=task.add_parser('relations',help='상위·하위·선행·중복·통합·관련 작업 조회')
+    related.add_argument('id');related.add_argument('--limit',type=positive,default=10);related.add_argument('--offset',type=offset,default=0)
+    from .relations import KINDS as RELATION_KINDS
+    for action in ('link','unlink'):
+        relation=task.add_parser(action);relation.add_argument('id');relation.add_argument('target')
+        relation.add_argument('--type',dest='relation_type',choices=sorted(RELATION_KINDS),required=True)
+        relation.add_argument('--version',type=int,required=True);relation.add_argument('--full',action='store_true')
     check=sub.add_parser('checkpoint'); check.add_argument('task_id'); check.add_argument('--session'); check.add_argument('--json',dest='input',required=True)
     resume=sub.add_parser('resume'); resume.add_argument('task_id'); resume.add_argument('--session')
     for command in (add, update, start, check, resume):
@@ -121,6 +159,9 @@ def parser():
 
 
 def run(args):
+    if args.command=='herdr':
+        from .herdr import dispatch
+        return emit(dispatch(args))
     if args.command=='update':
         from .update import update
         result=update(args.source);emit(result)
@@ -148,7 +189,7 @@ def run(args):
                         results.append({'project':item['id'],'status':'readonly'});continue
                     result=Records(Store(item['db_path'])).ensure(args.rebuild)
                 else:
-                    result=Records(Store(item['db_path'],readonly=True)).search(args.query,args.limit,args.status,args.category,args.kind,args.all)
+                    result=Records(Store(item['db_path'],readonly=True)).search(args.query,args.limit,args.status,args.category,args.kind,args.all,args.queue)
                 results.append({'project':fields(item,('id','name')),**result})
             except (BoardError,OSError,sqlite3.Error) as error:
                 errors.append({'project':item['id'],'error':str(error)})
@@ -156,7 +197,7 @@ def run(args):
             emit({'projects':results,'errors':errors})
             if errors:raise BoardError('일부 프로젝트 색인에 실패했습니다. errors를 확인해주세요.',409)
             return
-        matches=[{**m,'project':r['project']} for r in results for m in r['matches']]
+        matches=[{**m,'project':r['project']} for r in results for m in search_view(r)['matches']]
         matches.sort(key=lambda m:(sum(t.casefold() in m['title'].casefold() for t in args.query.split()),m['created_at']),reverse=True)
         return emit({'query':args.query,'matches':matches[:args.limit],'has_more':len(matches)>args.limit or any(r['has_more'] for r in results),'errors':errors})
     project=by_id(args.project) if args.project else resolve(args.workspace,create=args.command in {'init','migrate'} or (args.command=='task' and args.action=='add') or (args.command=='goal' and args.goal_action in {'add','draft'}) or (args.command=='team' and args.team_action=='create'),
@@ -164,7 +205,7 @@ def run(args):
     if args.command=='migrate':
         from .migration import migrate
         return emit(migrate(project,args.board,args.notes,args.active_note))
-    readonly=(args.command=='settings' and args.settings_action in {'show','catalog'}) or args.command in {'status','resume','sessions','doctor','usage','search'} or (args.command=='record' and args.record_action!='add') or (args.command=='goal' and args.goal_action in {'list','show','messages'}) or (args.command=='team' and args.team_action in {'list','show','collaboration'}) or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action=='show')
+    readonly=(args.command=='settings' and args.settings_action in {'show','catalog'}) or args.command in {'status','resume','sessions','doctor','usage','search'} or (args.command=='record' and args.record_action!='add') or (args.command=='goal' and args.goal_action in {'list','show','messages'}) or (args.command=='team' and args.team_action in {'list','show','collaboration'}) or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action in {'show','relations'})
     from .project_lifecycle import read
     if not readonly and args.command!='dashboard' and read(project['db_path'])['status']=='archived':raise BoardError('보관 프로젝트는 읽기 전용입니다. project restore로 복원해주세요.',409)
     store=Store(project['db_path'],readonly=readonly)
@@ -193,7 +234,7 @@ def run(args):
     from .records import Records, bounded
     records=Records(store)
     if args.command=='index':return emit(records.ensure(args.rebuild))
-    if args.command=='search':return emit({'project':fields(project,('id','name')),**records.search(args.query,args.limit,args.status,args.category,args.kind,args.all)})
+    if args.command=='search':return emit({'project':fields(project,('id','name')),**search_view(records.search(args.query,args.limit,args.status,args.category,args.kind,args.all,args.queue))})
     if args.command=='record':
         if args.record_action=='add':
             text=args.text if args.text is not None else args.file.read_text()
@@ -202,40 +243,46 @@ def run(args):
         return emit(records.show(args.id,args.full))
     if args.command=='status':
         tasks=store.all() if args.full or args.search else records.heads()
-        if args.status:
+        if args.queue:
+            tasks=[t for t in tasks if t['queue'] in args.queue]
+        elif args.status:
             tasks=[t for t in tasks if t['status'] in args.status]
         elif not args.all:
             tasks=[t for t in tasks if t['status'] not in {'done','archived'}]
         if args.category:
             tasks=[t for t in tasks if t['category'] in args.category]
+        if args.api_only:
+            tasks=[t for t in tasks if t['is_api_request']]
         if args.search:
             term=args.search.casefold()
             tasks=[t for t in tasks if any(term in t[key].casefold() for key in TEXT_FIELDS | {'id'})]
         sessions=store.sessions(args.all)
-        if args.status or args.category or args.search:
+        if args.api_only or args.queue or args.status or args.category or args.search:
             ids={t['id'] for t in tasks}
             sessions=[r for r in sessions if r['task_id'] in ids]
-        task_keys=('id','title','category','status','version','blocked_by')
+        task_keys=('id','title','queue','is_api_request','version','blocked_by')
         session_keys=('id','task_id','status','branch','version','updated_at')
         if args.full:
-            return emit({'project':project,'tasks':[fields(t,task_keys+('next_action',)) for t in tasks],
+            return emit({'project':project,'tasks':[fields(t,task_keys+('page_path','category','status','next_action',)) for t in tasks],
                          'sessions':[fields(r,('id','task_id','status','branch','next_action','updated_at')) for r in sessions]})
-        counts={status:sum(t['status']==status for t in tasks) for status in sorted({t['status'] for t in tasks})}
+        counts={queue:sum(t['queue']==queue for t in tasks) for queue in sorted({t['queue'] for t in tasks})}
         return emit({'project':fields(project,('id','name','version')),'counts':counts,
-                     'tasks':[fields(t,task_keys) for t in sorted(tasks,key=lambda t:(t['status']=='in_progress',t['updated_at']),reverse=True)[args.offset:args.offset+args.limit]],'sessions':[fields(r,session_keys) for r in sessions[:args.limit]],'total_tasks':len(tasks),'total_sessions':len(sessions),'limit':args.limit,'offset':args.offset,'has_more':args.offset+args.limit<len(tasks) or args.limit<len(sessions)})
+                     'tasks':[{**fields(t,task_keys),'page_path':bounded(t['page_path'],240),'truncated_fields':['page_path'] if len(t['page_path'])>240 else []} for t in sorted(tasks,key=lambda t:(t['queue']=='in_progress',t['updated_at']),reverse=True)[args.offset:args.offset+args.limit]],'sessions':[fields(r,session_keys) for r in sessions[:args.limit]],'total_tasks':len(tasks),'total_sessions':len(sessions),'limit':args.limit,'offset':args.offset,'has_more':args.offset+args.limit<len(tasks) or args.limit<len(sessions)})
     if args.command=='task':
+        if args.action=='relations':return emit(relation_view(store.relationships(args.id,args.limit,args.offset)))
+        if args.action in {'link','unlink'}:return emit(write_result(store.link(args.id,args.target,args.relation_type,args.version,args.action=='unlink'),args.full))
         if args.action=='show':
             if args.section:
                 rows=records.list(args.id,section=args.section,limit=1)['records']
                 if not rows:raise BoardError('해당 본문 레코드가 없습니다.',404)
                 return emit(records.show(rows[0]['id'],args.full))
-            return emit(store.detail(args.id) if args.full else records.overview(args.id))
-        if args.action=='add': return emit(write_result(store.write({'title':args.title,'category':args.category,**(payload(args.input) if args.input else {})}),args.full))
+            return emit(store.detail(args.id) if args.full else task_view(records.overview(args.id)))
+        if args.action=='add': return emit(write_result(store.write({'title':args.title,'category':args.category,**(payload(args.input) if args.input else {}),**({'parent_id':args.parent} if args.parent else {}),**({'queue':args.queue} if args.queue else {}),**({'is_api_request':True} if args.api_request else {}),**({'page_path':args.page} if args.page is not None else {})}),args.full))
         if args.action=='update': return emit(write_result(store.write(payload(args.input),args.id),args.full))
         task=store.detail(args.id)['task']
         if task['status'] in {'done','archived'}: raise BoardError('완료·보관된 작업은 명시적으로 상태를 수정한 뒤 시작하세요.')
         if any(store.detail(key)['task']['status']!='done' for key in task['blocked_by']): raise BoardError('미완료 선행 작업이 있습니다.')
-        return emit(write_result(store.write({'version':args.version,'status':'in_progress','note':'작업 시작'},args.id),args.full))
+        return emit(write_result(store.write({'version':args.version,**({'category':task['queue'],'status':'in_progress','is_api_request':task['is_api_request']} if task['queue'] in {'qa','issue'} else {'queue':'in_progress'}),'note':'작업 시작'},args.id),args.full))
     if args.command=='checkpoint':
         data=payload(args.input)
         data.setdefault('workspace',project['workspace'])
@@ -246,7 +293,7 @@ def run(args):
         return emit(write_result(store.checkpoint(data,args.session),args.full,'session'))
     if args.command=='resume':
         if args.full:return emit(store.resume(args.task_id,args.session))
-        result=records.overview(args.task_id)
+        result=task_view(records.overview(args.task_id))
         sessions=store.sessions()
         if args.session:
             selected=store.session(args.session)['session']
@@ -256,7 +303,7 @@ def run(args):
         result['sessions']=[{**fields(r,('id','task_id','version','status')), 'goal':bounded(r['goal'],240),'next_action':bounded(r['next_action'],480),'decisions':bounded(r['decisions'],480),'truncated_fields':[k for k,n in (('goal',240),('next_action',480),('decisions',480)) if len(r[k])>n]} for r in sessions[:3]]
         result['total_sessions']=len(sessions)
         heads={t['id']:t for t in records.heads()}
-        result['dependencies']=[fields(heads[key],('id','title','status','version')) for key in result['task']['blocked_by']]
+        result['dependencies']=[fields(heads[key],('id','title','queue','version')) for key in result['task']['blocked_by']]
         return emit(result)
     if args.command=='sessions':
         sessions=store.sessions(args.all)
