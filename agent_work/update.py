@@ -84,6 +84,34 @@ def _targets(data):
             if (Path(row['workspace'])/'.tack-orchestration/install.json').is_file():entries.setdefault(row['workspace'],dict(row))
     return sorted(entries.values(),key=lambda p:p['workspace'])
 
+def _migrate_legacy_runtime(db, db_path, backups):
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    changes = []
+    for table in ('team_settings', 'goals'):
+        if table not in tables:
+            continue
+        for key, raw in db.execute(f"SELECT id,data FROM {table} WHERE data LIKE ?", ('%herdr-codex-exec%',)):
+            data = json.loads(raw)
+            settings = data if table == 'team_settings' else data.get('execution_settings')
+            if isinstance(settings, dict) and settings.get('runtime') == 'herdr-codex-exec':
+                settings['runtime'] = 'codex-exec'
+                changes.append((table, key, json.dumps(data, ensure_ascii=False)))
+    if not changes:
+        return 0
+
+    folder = db_path.parent / 'backups'
+    folder.mkdir(exist_ok=True)
+    fd, backup = tempfile.mkstemp(prefix='runtime-migration-', suffix='.sqlite3', dir=folder)
+    os.close(fd)
+    with closing(sqlite3.connect(backup)) as target:
+        db.backup(target)
+    backups.append(backup)
+    db.execute('BEGIN IMMEDIATE')
+    for table, key, data in changes:
+        db.execute(f'UPDATE {table} SET data=?,version=version+1 WHERE id=?', (data, key))
+    return len(changes)
+
+
 def _harness(source,entry,data):
     root=Path(entry['workspace']).resolve();marker=root/'.tack-orchestration/install.json'
     if not root.is_dir() or not marker.is_file():return {'workspace':str(root),'status':'skipped','reason':'설치 폴더가 없거나 하네스가 설치되지 않았습니다.'}
@@ -93,8 +121,9 @@ def _harness(source,entry,data):
     if db_path.parent not in {(data/'projects'/entry['project_id']).resolve(),(root/'.agent-work').resolve()}:raise BoardError('프로젝트 관리 DB 경로가 아닙니다.')
     if not db_path.is_file():raise BoardError('프로젝트 DB가 없습니다.')
     if not marker.resolve().is_relative_to(root):raise BoardError('프로젝트 밖 설치 설정은 변경하지 않습니다.')
-    with access(db_path,exclusive=True),closing(sqlite3.connect(db_path.as_uri()+'?mode=ro',uri=True)) as db:
-        if state(db)['status']=='deleted':return {'workspace':str(root),'status':'skipped','reason':'삭제한 프로젝트입니다.'}
+    with access(db_path,exclusive=True),closing(sqlite3.connect(db_path.as_uri()+'?mode=rw',uri=True)) as db, db:
+        status=state(db)['status']
+        if status=='deleted':return {'workspace':str(root),'status':'skipped','reason':'삭제한 프로젝트입니다.'}
         try:idle(db)
         except BoardError as error:return {'workspace':str(root),'status':'skipped','reason':str(error)}
         binary=root/'.tack-orchestration/bin/tack-orchestration'
@@ -112,8 +141,9 @@ def _harness(source,entry,data):
         register(data,{'workspace':str(root),'id':entry['project_id'],'db_path':str(db_path)},backups)
         changes=[] if custom else [(target,stock.decode(),False)]
         changes.extend([(marker,json.dumps(updated,indent=2)+'\n',False),(binary,command,True)])
+        migrated=_migrate_legacy_runtime(db,db_path,backups) if status=='active' else 0
         activate(changes,backups)
-        return {'workspace':str(root),'version':updated['version'],'runtime':str(new_runtime),'status':'updated' if changed else 'current','skill':'preserved_custom' if custom else 'managed','backups':backups}
+        return {'workspace':str(root),'version':updated['version'],'runtime':str(new_runtime),'status':'updated' if changed or migrated else 'current','skill':'preserved_custom' if custom else 'managed','backups':backups,**({'migrated_runtime_records':migrated} if migrated else {})}
 
 def managed_instructions(source, home, environ, installed):
     from .setup import block, codex_homes, LEGACY_SKILL_HASHES, BEGIN, END

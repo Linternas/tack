@@ -64,7 +64,11 @@ class Orchestrator(Tracker):
 
     @staticmethod
     def decode(row):
-        return {**json.loads(row['data']), **{k:row[k] for k in row.keys() if k != 'data'}}
+        data = json.loads(row['data'])
+        settings = data.get('execution_settings')
+        if isinstance(settings, dict) and settings.get('runtime') == 'herdr-codex-exec':
+            settings['runtime'] = 'codex-exec'
+        return {**data, **{k:row[k] for k in row.keys() if k != 'data'}}
 
     def overview(self):
         if not self.available():
@@ -492,21 +496,9 @@ class Orchestrator(Tracker):
             if run_id and self.goal(goal_id).get('mode')=='team' and Path(cwd).resolve()!=Path(self.workspace).resolve():
                 process_env={**os.environ,'GIT_CEILING_DIRECTORIES':str(Path(cwd).resolve().parent)}
                 for name in ('GIT_DIR','GIT_WORK_TREE','GIT_COMMON_DIR','GIT_INDEX_FILE'):process_env.pop(name,None)
-            if run_id and team_mode and self.goal(goal_id).get('execution_settings',{}).get('runtime')=='herdr-codex-exec':
-                from .herdr_process import HerdrProcess
-                proc=HerdrProcess(argv,cwd,process_env or dict(os.environ),prompt,
-                                  role+' · '+self.store.detail(run_task)['task']['title'],{'tack_goal':goal_id,'tack_job':run_task,'tack_role':role,'tack_workspace':self.workspace},parent=self.goal(goal_id).get('herdr_parent'))
-                self.run_update(run_id,herdr_address=proc.address,herdr_title=proc.title)
-            else:
-                proc=subprocess.Popen(argv,cwd=cwd,env=process_env,stdin=input_file if input_file else subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)
+            proc=subprocess.Popen(argv,cwd=cwd,env=process_env,stdin=input_file if input_file else subprocess.DEVNULL,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,start_new_session=True)
         finally:
             if input_file:input_file.close()
-        def signal_process(sig):
-            if hasattr(proc,'stop'):
-                proc.stop()
-            else:
-                os.killpg(proc.pid,sig)
-
         reader=None;stopped=threading.Event()
         try:
             lines=queue.Queue(maxsize=1000)
@@ -535,13 +527,13 @@ class Orchestrator(Tracker):
                     if limit=='token_limit' and completed:limit=''
                     if (state['pause_requested'] or limit) and not interrupted:
                         interrupted=True;interrupted_at=time.monotonic();error_code=limit or 'interrupted'
-                        try:signal_process(signal.SIGTERM)
+                        try:os.killpg(proc.pid,signal.SIGTERM)
                         except ProcessLookupError:pass
                     if interrupted and proc.poll() is None:
                         try:proc.wait(timeout=2)
-                        except subprocess.TimeoutExpired:signal_process(signal.SIGKILL)
+                        except subprocess.TimeoutExpired:os.killpg(proc.pid,signal.SIGKILL)
                 if interrupted and time.monotonic()-interrupted_at>=2:
-                    try:signal_process(signal.SIGKILL)
+                    try:os.killpg(proc.pid,signal.SIGKILL)
                     except ProcessLookupError:pass
                 try:line=lines.get(timeout=0.1)
                 except queue.Empty:continue
@@ -609,12 +601,12 @@ class Orchestrator(Tracker):
             if team_mode and status=='failed' and result_error:error_code='invalid_employee_result: '+result_error
             return {'status':status,'exit_code':code,'error':error_code or ('interrupted' if interrupted else 'codex_execution_failed' if run_id and code!=0 else 'invalid_plan' if planning and status=='failed' and not plan_steps else ''),'plan_steps':plan_steps,'brief':brief,**({'team_result':team_result} if team_mode else {})}
         finally:
-            try:signal_process(signal.SIGTERM)
+            try:os.killpg(proc.pid,signal.SIGTERM)
             except ProcessLookupError:pass
             if proc.poll() is None:
                 try:proc.wait(timeout=2)
-                except subprocess.TimeoutExpired:signal_process(signal.SIGKILL);proc.wait()
-            try:signal_process(signal.SIGKILL)
+                except subprocess.TimeoutExpired:os.killpg(proc.pid,signal.SIGKILL);proc.wait()
+            try:os.killpg(proc.pid,signal.SIGKILL)
             except ProcessLookupError:pass
             stopped.set()
             if reader is not None and reader.ident is not None:reader.join(timeout=2)
@@ -661,7 +653,6 @@ class Orchestrator(Tracker):
 def capabilities():
     import shutil
     return {'codex-exec':{'available':bool(shutil.which('codex')),'control':'Tack이 시작한 실행의 시작·중단·재개','observation':'JSON 실행 이벤트'},
-            'herdr-codex-exec':{'available':bool(shutil.which('hc') and shutil.which('herdr-app')),'control':'프로젝트 역할별 Herdr 탭 실행·중단·재개','observation':'Codex JSON 결과·실제 대화 ID','requires':'실행 중인 Herdr App과 Codex CLI'},
             'codex-app':{'control':'기존 앱 세션 제어 미지원','observation':'설치된 Hook 신뢰 및 실제 수신 확인 필요'},
             'orca':{'available':bool(shutil.which('orca')),'control':'기존 Orca 실행 제어 미지원','observation':'계정별 Codex Hook 신뢰 및 실제 수신 확인 필요'}}
 

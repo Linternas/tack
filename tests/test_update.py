@@ -50,6 +50,43 @@ class UpdateTests(unittest.TestCase):
         team=Team(self.store);settings=team.settings();settings['roles']['implement']['model']='my-model';settings['roles']['implement']['instructions']='Keep my policy';team.save(settings);before=team.settings()
         result=self.run_update();self.assertEqual(skill.read_text(),'My role instructions');self.assertEqual(result['projects'][0]['skill'],'preserved_custom');self.assertEqual(team.settings(),before)
         self.assertNotEqual(json.loads((self.workspace/'.tack-orchestration/install.json').read_text())['skill_sha256'],__import__('hashlib').sha256(skill.read_bytes()).hexdigest())
+    def test_retired_runtime_updates_settings_and_goals_but_preserves_execution_history(self):
+        from agent_work.team import Team
+        team = Team(self.store)
+        settings = team.save(team.settings())
+        orch = Orchestrator(self.store, self.workspace)
+        goal = orch.create('Existing goal', {
+            'acceptance': 'pass', 'steps': [{'title': 'work', 'role': 'implement', 'prompt': 'test'}],
+            'verification': [['python3', '-m', 'unittest']],
+        })
+        legacy = 'herdr-codex-exec'
+        history = json.dumps({'status': 'succeeded', 'adapter': legacy})
+        with self.store.connect() as db:
+            db.execute("UPDATE team_settings SET data=json_set(data,'$.runtime',?) WHERE id=1", (legacy,))
+            db.execute("UPDATE goals SET data=json_set(data,'$.execution_settings',json(?)) WHERE id=?",
+                       (json.dumps({'runtime': legacy, 'max_tokens': 1000}), goal['id']))
+            db.execute("INSERT INTO executions VALUES (?,?,?,?,?,?)",
+                       ('old-run', goal['id'], self.task['id'], history, '2026-01-01', '2026-01-01'))
+        self.assertEqual(team.settings()['runtime'], 'codex-exec')
+        self.assertEqual(orch.goal(goal['id'])['execution_settings']['runtime'], 'codex-exec')
+        before_tasks = self.store.all()
+        result = self.run_update()
+        self.assertEqual(result['errors'], [])
+        project = result['projects'][0]
+        self.assertEqual(project['migrated_runtime_records'], 2)
+        backup = next(path for path in project['backups'] if path.endswith('.sqlite3'))
+        with closing(sqlite3.connect(backup)) as db:
+            self.assertEqual(json.loads(db.execute("SELECT data FROM team_settings").fetchone()[0])['runtime'], legacy)
+        with self.store.connect() as db:
+            self.assertEqual(json.loads(db.execute("SELECT data FROM team_settings").fetchone()[0])['runtime'], 'codex-exec')
+            data = json.loads(db.execute("SELECT data FROM goals WHERE id=?", (goal['id'],)).fetchone()[0])
+            self.assertEqual(data['execution_settings'], {'runtime': 'codex-exec', 'max_tokens': 1000})
+            self.assertEqual(db.execute("SELECT data FROM executions WHERE id='old-run'").fetchone()[0], history)
+        self.assertEqual(team.settings()['version'], settings['version'] + 1)
+        self.assertEqual(orch.goal(goal['id'])['version'], goal['version'] + 1)
+        self.assertEqual(self.store.all(), before_tasks)
+        self.assertNotIn('migrated_runtime_records', self.run_update()['projects'][0])
+
     def test_stock_skill_update_and_legacy_marker_without_hash(self):
         marker=self.workspace/'.tack-orchestration/install.json';data=json.loads(marker.read_text());data.pop('skill_sha256');data.pop('version');marker.write_text(json.dumps(data))
         skill=self.workspace/'.agents/skills/tack-orchestration/SKILL.md'
