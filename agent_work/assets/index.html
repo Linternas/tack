@@ -50,7 +50,7 @@
     </div>
     <div id="worktree-list" class="form-body" aria-live="polite"></div>
   </dialog>
-  <dialog id="detail-panel" class="detail-panel" aria-labelledby="detail-title"><div class="panel-top"><span id="detail-id" class="monospace"></span><button class="icon-button" id="close-detail" aria-label="상세 닫기">×</button></div><div id="detail-content"></div></dialog>
+  <dialog id="detail-panel" class="detail-panel" aria-labelledby="detail-title"><div class="panel-top"><div class="detail-id-actions"><span id="detail-id" class="monospace" tabindex="-1" autofocus></span><button class="icon-button" type="button" id="copy-detail-id" aria-label="티켓 ID 복사" title="티켓 ID 복사"><svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2"/></svg></button><span id="copy-detail-status" class="muted" role="status"></span></div><button class="icon-button" id="close-detail" aria-label="상세 닫기">×</button></div><div id="detail-content"></div></dialog>
   <dialog id="editor" aria-labelledby="editor-title">
     <form id="task-form"><header class="dialog-header"><div><span class="eyebrow">DEVELOPMENT RECORD</span><h2 id="editor-title">항목 추가</h2></div><button class="icon-button" type="button" id="close-editor" aria-label="편집 닫기">×</button></header>
       <div class="form-body">

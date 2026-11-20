@@ -86,18 +86,18 @@
     const apiOnly = $('api-only').checked;
     $('metrics').setAttribute('aria-label',apiOnly ? 'API 요청 업무 목록 요약' : '개발 현황 요약');
     const scoped = state.tasks.filter(task => !apiOnly || task.is_api_request);
-    const open = scoped.filter((task) => !closed(task));
     const metrics = [
       ['todo','grid','착수하기로 정한 작업'],
       ['in_progress','qa','현재 수행 중인 작업'],
       ['issue','issue','조사·처리할 문제'],
       ['qa','qa','검증할 항목'],
       ['waiting','api','결정·외부 조건 대기'],
+      ['done','done','완료 기록 보기'],
     ];
     $('metrics').innerHTML = metrics
       .map(([queue, icon, hint]) => {
-        const count = open.filter((task) => task.queue === queue).length;
-        const selected = state.mode === 'all' && state.queue === queue;
+        const count = scoped.filter((task) => task.queue === queue).length;
+        const selected = queue === 'done' ? state.mode === 'done' : state.mode === 'all' && state.queue === queue;
         return `<button class="metric ${queue}" data-queue="${queue}" aria-pressed="${selected}"><span class="metric-top">${queues[queue]}<span class="metric-icon" aria-hidden="true">${window.tackIcon?.(icon)||''}</span></span><strong class="metric-number">${count}</strong><span class="metric-note">${hint}</span></button>`;
       })
       .join('');
@@ -227,6 +227,7 @@
     const sequence = ++state.detailSequence;
     state.selectedId = id;
     $('detail-id').textContent = id;
+    $('copy-detail-status').textContent = '';
     $('detail-content').innerHTML = '<h2 id="detail-title">불러오는 중…</h2>';
     if (!$('detail-panel').open) $('detail-panel').showModal();
     try {
@@ -554,11 +555,13 @@
     const button = event.target.closest('[data-queue], [data-open], [data-edit], [data-archive], [data-complete-qa]');
     if (!button) return;
     if (button.dataset.queue) {
-      state.mode = 'all';
-      $('record-view').value = 'all';
+      const queue = button.dataset.queue;
+      state.mode = queue === 'done' ? 'done' : 'all';
+      $('record-view').value = state.mode;
       for (const id of ['search', 'area-filter', 'priority-filter']) $(id).value = '';
-      state.queue = button.dataset.queue;
+      state.queue = queue === 'done' ? '' : queue;
       render();
+      if (event.detail === 0) $('metrics').querySelector(`[data-queue="${queue}"]`)?.focus({preventScroll: true});
     } else if (button.dataset.open) openDetail(button.dataset.open);
     else if (button.dataset.completeQa) openQaCompletion(button.dataset.completeQa);
     else if (button.dataset.edit) openEditor(button.dataset.edit);
@@ -697,6 +700,19 @@
       }
     } finally {
       removingWorktree = false;
+    }
+  });
+  $('copy-detail-id').addEventListener('click', async () => {
+    const sequence = state.detailSequence;
+    const id = state.selectedId;
+    if (!id) return;
+    const status = $('copy-detail-status');
+    status.textContent = '';
+    try {
+      await navigator.clipboard.writeText(id);
+      if (sequence === state.detailSequence) status.textContent = '복사됨';
+    } catch {
+      if (sequence === state.detailSequence) status.textContent = '복사 실패';
     }
   });
   $('close-detail').addEventListener('click', () => $('detail-panel').close());

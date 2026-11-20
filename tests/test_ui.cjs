@@ -138,7 +138,7 @@ test('initial view separates ongoing work from completed history', async (t) => 
   assert.deepEqual(ui.rows(), ['QA-001', 'QA-002']);
   await ui.change('record-view', 'done');
   assert.deepEqual(ui.rows(), ['DONE-001']);
-  assert.equal(ui.document.querySelector('#metrics [aria-pressed="true"]'), null);
+  assert.equal(ui.document.querySelector('#metrics [aria-pressed="true"]').dataset.queue, 'done');
   await ui.click('#reset-filters');
   assert.equal(ui.rows().length, 5);
   assert.equal(ui.$('record-view').value, 'all');
@@ -206,6 +206,22 @@ test('worktree deletion explains blocks and shows confirmation and completion', 
   assert.match(ui.$('worktree-message').textContent, /삭제했습니다/);
   assert.ok(ui.$('worktree-message').textContent.includes(clean.backup_branch));
   assert.equal(ui.document.querySelector('[data-remove-worktree="1"]'), null);
+});
+
+test('drawer copies only the open ticket ID and reports clipboard failure', async (t) => {
+  const ui = await setup(t);
+  await ui.click('[data-open="ISSUE-001"]');
+  await ui.click('#copy-detail-id');
+  assert.deepEqual(ui.clipboard, ['ISSUE-001']);
+  assert.equal(ui.$('copy-detail-status').textContent, '복사됨');
+  await ui.click('#close-detail');
+  await ui.click('[data-open="QA-001"]');
+  assert.equal(ui.$('copy-detail-status').textContent, '');
+  await ui.click('#copy-detail-id');
+  assert.deepEqual(ui.clipboard, ['ISSUE-001', 'QA-001']);
+  ui.window.navigator.clipboard.writeText = async () => { throw new Error('NotAllowedError'); };
+  await ui.click('#copy-detail-id');
+  assert.equal(ui.$('copy-detail-status').textContent, '복사 실패');
 });
 
 test('issue copy uses the current detail and exports agent context without UI or database metadata', async (t) => {
@@ -469,8 +485,8 @@ test('queue cards form one disjoint partition and exclude QA and issues from tod
   assert.equal(ui.$('category-filter'),null);
   assert.equal(ui.$('edit-category'),null);
   assert.equal(ui.$('edit-status'),null);
-  assert.equal(ui.$('metrics').querySelectorAll('[data-queue]').length,5);
-  for(const queue of ['todo','in_progress','issue','qa','waiting']) {
+  assert.equal(ui.$('metrics').querySelectorAll('[data-queue]').length,6);
+  for(const queue of ['todo','in_progress','issue','qa','waiting','done']) {
     await ui.change('search','일치하지않는검색어');await ui.change('priority-filter','P1');await ui.change('record-view','done');
     await ui.click(`#metrics [data-queue="${queue}"]`);
     const expected=fixture.filter(task=>queueOf(task)===queue).map(task=>task.id);
