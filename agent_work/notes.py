@@ -54,6 +54,9 @@ def save_note(store, payload, note_id=None):
         db.execute('BEGIN IMMEDIATE')
         if state(db)['status'] == 'archived':
             raise BoardError('보관 프로젝트는 읽기 전용입니다.', 409)
+        db.execute("""CREATE TABLE IF NOT EXISTS notes (
+            id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL,
+            version INTEGER NOT NULL, updated_at TEXT NOT NULL)""")
         if note_id:
             version = payload['version']
             if type(version) is not int:
