@@ -158,6 +158,56 @@ test('search, category and status filters apply without fetching product APIs', 
   assert.ok(ui.calls.every((call) => call.url.startsWith('/api/')));
 });
 
+test('worktree deletion explains blocks and shows confirmation and completion', async (t) => {
+  const ui = await setup(t);
+  const clean = {path: '/repo/clean', branch: '', head: 'abcdef0', commit: 'abcdef0123456789', backup_branch: 'tack/archive/abcdef0123456789', removable: true, uncommitted: 0, unpushed: 0, ignored_paths: ['.env.local', 'node_modules/']};
+  const blocked = {...clean, path: '/repo', removable: false, remove_reasons: ['기본 워크트리입니다.']};
+  const originalFetch = ui.window.fetch;
+  let removed = false;
+  let added = false;
+  let finish;
+  ui.window.fetch = async (url, options) => {
+    if (url === '/api/worktrees') {
+      return {ok: true, json: async () => ({worktrees: structuredClone(removed ? [blocked] : [blocked, clean])})};
+    }
+    if (url === '/api/worktrees/remove') {
+      if (!added) {
+        added = true;
+        clean.ignored_paths.push('new.cache');
+        return {ok: false, status: 409, json: async () => ({error: '확인하지 않은 항목입니다.'})};
+      }
+      assert.deepEqual(JSON.parse(options.body), {path: clean.path, commit: clean.commit, backup_branch: clean.backup_branch, ignored_paths: clean.ignored_paths});
+      await new Promise(resolve => { finish = resolve; });
+      removed = true;
+      return {ok: true, json: async () => ({removed: true, backup_branch: clean.backup_branch})};
+    }
+    return originalFetch(url, options);
+  };
+  await ui.click('#open-worktrees');
+  await ui.click('[data-remove-worktree="0"]');
+  assert.match(ui.$('worktree-message').textContent, /기본 워크트리/);
+  assert.equal(ui.$('worktree-confirmation').hidden, true);
+  assert.match(ui.$('worktree-ignored-paths').textContent, /node_modules/);
+  await ui.click('[data-remove-worktree="1"]');
+  assert.equal(ui.$('worktree-confirmation').hidden, false);
+  assert.match(ui.$('worktree-message').textContent, /repo\/clean/);
+  assert.equal(ui.$('confirm-worktree-remove').textContent, '브랜치 보관 후 삭제');
+  assert.deepEqual([...ui.$('worktree-ignored-paths').children].map(el => el.textContent), clean.ignored_paths);
+  await ui.click('#cancel-worktree-remove');
+  assert.equal(finish, undefined);
+  await ui.click('[data-remove-worktree="1"]');
+  await ui.click('#confirm-worktree-remove');
+  assert.match(ui.$('worktree-message').textContent, /새로 발견된 항목 1개/);
+  assert.match(ui.$('worktree-ignored-paths').textContent, /새로 발견 · new.cache/);
+  await ui.click('#confirm-worktree-remove');
+  assert.match(ui.$('worktree-message').textContent, /삭제 중/);
+  finish();
+  await new Promise(setImmediate);
+  assert.match(ui.$('worktree-message').textContent, /삭제했습니다/);
+  assert.ok(ui.$('worktree-message').textContent.includes(clean.backup_branch));
+  assert.equal(ui.document.querySelector('[data-remove-worktree="1"]'), null);
+});
+
 test('issue copy uses the current detail and exports agent context without UI or database metadata', async (t) => {
   const ui = await setup(t);
   Object.assign(ui.records[0], {

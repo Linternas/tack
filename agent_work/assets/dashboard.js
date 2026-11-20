@@ -585,6 +585,120 @@
   });
   $('add-task').addEventListener('click', () => openEditor());
   $('refresh').addEventListener('click', () => refresh());
+  let worktreeRequest = 0;
+  let listedWorktrees = [];
+  let pendingWorktree = null;
+  let removingWorktree = false;
+  const worktreeFeedback = $('worktree-feedback');
+  const worktreeConfirmation = $('worktree-confirmation');
+
+  function worktreeMessage(message, confirm = false, ignoredPaths = [], newPaths = []) {
+    worktreeFeedback.hidden = !message;
+    $('worktree-message').textContent = message;
+    worktreeConfirmation.hidden = !confirm;
+    const ignoredList = $('worktree-ignored-paths');
+    ignoredList.hidden = !ignoredPaths.length;
+    const added = new Set(newPaths);
+    ignoredList.replaceChildren();
+    for (const path of ignoredPaths) {
+      const item = document.createElement('li');
+      item.textContent = added.has(path) ? '새로 발견 · ' + path : path;
+      ignoredList.append(item);
+    }
+  }
+
+  function worktreeActivity(item) {
+    const value = item.last_session_at || item.last_git_at;
+    if (!value || Number.isNaN(Date.parse(value))) return '최근 사용 기록 없음';
+    const formatted = new Date(value).toLocaleString('ko-KR', {
+      year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+    });
+    return `${item.last_session_at ? '마지막 세션 기록' : '최근 Git 활동'} <time datetime="${escape(value)}">${escape(formatted)}</time>`;
+  }
+
+  async function loadWorktrees() {
+    const sequence = ++worktreeRequest;
+    const list = $('worktree-list');
+    listedWorktrees = [];
+    list.textContent = '워크트리를 불러오는 중…';
+    try {
+      const {worktrees} = await request('/api/worktrees');
+      if (sequence !== worktreeRequest) return;
+      listedWorktrees = worktrees;
+      list.innerHTML = worktrees.length ? worktrees.map((item, index) => `
+        <article><strong>${escape(item.branch || item.head || '브랜치 없음')}</strong>
+          ${item.current ? '<span class="badge">현재 위치</span>' : ''}
+          ${item.active ? badge('in_progress', queues) : ''}
+          <code>${escape(item.path)}</code>
+          <div class="muted">${worktreeActivity(item)}</div>
+          <div class="worktree-actions"><span class="muted">미커밋 ${item.uncommitted ?? '확인 불가'} · 미푸시 ${item.unpushed ?? '추적 정보 없음'}${item.ignored_paths?.length ? ' · Git 무시 파일 있음' : ''}</span>
+            <button type="button" class="button secondary" data-remove-worktree="${index}">${item.removable ? (item.backup_branch ? '브랜치 보관 후 삭제' : (item.ignored_paths?.length ? '파일 확인 후 삭제' : '삭제')) : '삭제 불가 이유'}</button>
+          </div>
+        </article>`).join('') : '표시할 Git 워크트리가 없습니다.';
+    } catch (error) {
+      if (sequence === worktreeRequest) list.textContent = error.message;
+    }
+  }
+
+  $('open-worktrees').addEventListener('click', () => {
+    pendingWorktree = null;
+    worktreeMessage(removingWorktree ? '워크트리 삭제 중… 큰 폴더는 시간이 걸릴 수 있습니다.' : '');
+    $('worktree-dialog').showModal();
+    loadWorktrees();
+  });
+  $('worktree-list').addEventListener('click', event => {
+    const button = event.target.closest('[data-remove-worktree]');
+    if (!button || removingWorktree) return;
+    reviewWorktree(listedWorktrees[Number(button.dataset.removeWorktree)]);
+  });
+
+  function reviewWorktree(item, notice = '', newPaths = []) {
+    $('worktree-dialog').scrollTop = 0;
+    const ignoredPaths = item.ignored_paths ?? [];
+    pendingWorktree = item.removable ? item : null;
+    if (!pendingWorktree) {
+      const ignoredMessage = ignoredPaths.length ? '\nGit이 무시하는 파일 및 폴더' : '';
+      worktreeMessage(notice + '삭제할 수 없습니다. ' + item.remove_reasons.join(' ') + ignoredMessage, false, ignoredPaths, newPaths);
+      return;
+    }
+    const warning = ignoredPaths.length ? '\n아래 Git 무시 파일과 폴더도 함께 삭제됩니다.' : '';
+    let preservation = '브랜치는 유지됩니다.';
+    if (item.backup_branch) preservation = `커밋 ${item.head}를 보관용 브랜치에 저장한 뒤 폴더를 삭제합니다.\n${item.backup_branch}`;
+    else if (item.retained_by) preservation = `커밋 ${item.head}는 ${item.retained_by} 브랜치에 포함돼 있습니다.`;
+    $('confirm-worktree-remove').textContent = item.backup_branch ? '브랜치 보관 후 삭제' : '폴더 삭제';
+    worktreeMessage(notice + `워크트리 폴더를 삭제할까요?\n${item.path}\n${preservation}${warning}`, true, ignoredPaths, newPaths);
+    $('cancel-worktree-remove').focus({preventScroll: true});
+  }
+  $('cancel-worktree-remove').addEventListener('click', () => {
+    pendingWorktree = null;
+    worktreeMessage('삭제를 취소했습니다.');
+  });
+  $('confirm-worktree-remove').addEventListener('click', async () => {
+    if (!pendingWorktree || removingWorktree) return;
+    const {path, commit, backup_branch, ignored_paths = []} = pendingWorktree;
+    pendingWorktree = null;
+    removingWorktree = true;
+    worktreeMessage('워크트리 삭제 중… 큰 폴더는 시간이 걸릴 수 있습니다.');
+    try {
+      const result = await request('/api/worktrees/remove', {method: 'POST', body: JSON.stringify({path, commit, backup_branch, ignored_paths})});
+      const preserved = result.backup_branch ? `\n보관용 브랜치 ${result.backup_branch}` : '';
+      worktreeMessage('워크트리 폴더를 삭제했습니다.' + preserved);
+      if ($('worktree-dialog').open) await loadWorktrees();
+    } catch (error) {
+      worktreeMessage('삭제 실패. ' + error.message);
+      if ($('worktree-dialog').open) {
+        await loadWorktrees();
+        const fresh = listedWorktrees.find(item => item.path === path);
+        const confirmed = new Set(ignored_paths);
+        const added = fresh?.ignored_paths?.filter(value => !confirmed.has(value)) ?? [];
+        if (fresh && added.length) {
+          reviewWorktree(fresh, `새로 발견된 항목 ${added.length}개를 포함해 아래 목록을 다시 확인해주세요.\n`, added);
+        }
+      }
+    } finally {
+      removingWorktree = false;
+    }
+  });
   $('close-detail').addEventListener('click', () => $('detail-panel').close());
   $('detail-panel').addEventListener('close', () => {
     state.detailSequence++;

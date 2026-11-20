@@ -1,10 +1,12 @@
 """Stable project identities, explicit storage selection, and checkout aliases."""
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from .store import BoardError
 
@@ -16,6 +18,202 @@ def home():
 def git_value(workspace, *args):
     result = subprocess.run(['git','-C',str(workspace),*args], capture_output=True, text=True)
     return result.stdout.strip() if result.returncode == 0 else ''
+
+
+def worktree_git(workspace, *args, timeout=5):
+    try:
+        return subprocess.run(
+            ['git', '-C', str(workspace), *args], capture_output=True, timeout=timeout,
+            env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'},
+        )
+    except FileNotFoundError:
+        raise BoardError('Git 실행 파일을 찾을 수 없습니다.', 503) from None
+    except subprocess.TimeoutExpired:
+        raise BoardError('Git 워크트리 상태 조회 시간이 초과됐습니다.', 503) from None
+
+
+def worktree_status(path):
+    status = worktree_git(path, 'status', '--porcelain=v1', '-z', '--no-renames',
+                          '--untracked-files=all', '--ignored=matching', '--ignore-submodules=none')
+    upstream = worktree_git(path, 'rev-parse', '--symbolic-full-name', '@{upstream}')
+    unpushed = None
+    if upstream.returncode == 0 and upstream.stdout.startswith(b'refs/remotes/'):
+        ahead = worktree_git(path, 'rev-list', '--count', '@{upstream}..HEAD')
+        if ahead.returncode == 0:
+            unpushed = int(ahead.stdout)
+    entries = status.stdout.split(b'\0')[:-1]
+    ignored_paths = []
+    for entry in entries:
+        if not entry.startswith(b'!! '):
+            continue
+        ignored = entry[3:]
+        name = ignored.rstrip(b'/').rsplit(b'/', 1)[-1]
+        generated_dir = ignored.endswith(b'/') and name in {b'node_modules', b'.next', b'.swc'}
+        if generated_dir or name == b'tsconfig.tsbuildinfo' or ignored.startswith(b'.husky/_/'):
+            continue
+        ignored_paths.append(ignored.decode('utf-8', 'backslashreplace'))
+    return {
+        'uncommitted': sum(not entry.startswith(b'!! ') for entry in entries) if status.returncode == 0 else None,
+        'ignored_paths': sorted(ignored_paths),
+        'unpushed': unpushed,
+    }
+
+
+def worktree_reflog_time(path):
+    try:
+        result = worktree_git(path, 'reflog', '-1', '--date=iso-strict', '--format=%gD', 'HEAD')
+        if result.returncode == 0:
+            selector = result.stdout.decode('ascii').strip()
+            if selector.startswith('HEAD@{') and selector.endswith('}'):
+                return datetime.fromisoformat(selector[6:-1]).isoformat()
+    except (BoardError, ValueError):
+        pass
+    return ''
+
+
+def worktrees(workspace, sessions, *, include_activity=False):
+    result = worktree_git(workspace, 'worktree', 'list', '--porcelain', '-z')
+    if result.returncode:
+        return []
+
+    current = Path(workspace).resolve()
+    open_paths = {
+        Path(session['workspace']).resolve()
+        for session in sessions
+        if session['status'] in {'active', 'blocked'} and Path(session.get('workspace') or '.').is_absolute()
+    }
+    active_paths = {
+        Path(session['workspace']).resolve()
+        for session in sessions
+        if session['status'] == 'active' and Path(session.get('workspace') or '.').is_absolute()
+    }
+    last_session = {}
+    if include_activity:
+        for session in sessions:
+            session_path = Path(session.get('workspace') or '.')
+            if session_path.is_absolute() and session.get('updated_at'):
+                key = session_path.resolve()
+                last_session[key] = max(last_session.get(key, ''), session['updated_at'])
+    items = []
+    for index, record in enumerate(result.stdout.split(b'\0\0')):
+        fields = {}
+        for field in record.split(b'\0'):
+            key, _, value = field.partition(b' ')
+            if key:
+                fields[key.decode('ascii')] = value
+        if 'prunable' in fields or 'bare' in fields or 'worktree' not in fields:
+            continue
+        display_path = fields['worktree'].decode('utf-8', 'replace')
+        path = Path(os.fsdecode(fields['worktree'])).resolve()
+        stats = worktree_status(path)
+        reasons = []
+        if index == 0:
+            reasons.append('기본 워크트리입니다.')
+        if 'locked' in fields:
+            reasons.append('잠긴 워크트리입니다.')
+        if any(session_path.is_relative_to(path) for session_path in open_paths):
+            reasons.append('열린 Tack 세션이 있습니다.')
+        if display_path.encode('utf-8') != fields['worktree'] or stats['uncommitted'] is None:
+            reasons.append('폴더의 변경 상태를 확인할 수 없습니다.')
+        elif stats['uncommitted']:
+            reasons.append(f"미커밋 파일이 {stats['uncommitted']}개 있습니다.")
+        if stats['unpushed']:
+            reasons.append(f"미푸시 커밋이 {stats['unpushed']}개 있습니다.")
+        head = fields.get('HEAD', b'').decode('ascii')
+        branch_ref = fields.get('branch', b'')
+        retained_by = ''
+        backup_branch = ''
+        if not reasons:
+            git_dir = worktree_git(path, 'rev-parse', '--absolute-git-dir')
+            if git_dir.returncode:
+                reasons.append('Git 작업 상태를 확인할 수 없습니다.')
+            else:
+                metadata = Path(os.fsdecode(git_dir.stdout.rstrip(b'\n')))
+                if any((metadata / name).exists() for name in (
+                    'rebase-merge', 'rebase-apply', 'MERGE_HEAD', 'CHERRY_PICK_HEAD',
+                    'REVERT_HEAD', 'BISECT_START', 'sequencer',
+                )):
+                    reasons.append('리베이스·병합 등 진행 중인 Git 작업이 있습니다.')
+        if not reasons and stats['unpushed'] is None:
+            if not re.fullmatch(r'(?:[0-9a-f]{40}|[0-9a-f]{64})', head) or not head.strip('0'):
+                reasons.append('보존할 커밋을 확인할 수 없습니다.')
+            else:
+                refs = worktree_git(path, 'for-each-ref', '--contains', head,
+                                    '--format=%(refname)%09%(symref)', 'refs/heads', 'refs/remotes')
+                if refs.returncode:
+                    reasons.append('커밋을 포함하는 브랜치를 확인할 수 없습니다.')
+                else:
+                    for row in refs.stdout.splitlines():
+                        ref, _, symbolic = row.partition(b'\t')
+                        if not symbolic and ref != branch_ref:
+                            retained_by = ref.split(b'/', 2)[-1].decode('utf-8', 'replace')
+                            break
+                    if not retained_by:
+                        backup_branch = 'tack/archive/' + head
+        items.append({
+            'path': display_path,
+            'branch': fields.get('branch', b'').removeprefix(b'refs/heads/').decode('utf-8', 'replace'),
+            'head': head[:7],
+            'commit': head,
+            'retained_by': retained_by,
+            'backup_branch': backup_branch,
+            'current': current.is_relative_to(path),
+            'active': path in active_paths,
+            **stats,
+            'remove_reasons': reasons,
+        })
+        if include_activity:
+            session_time = last_session.get(path, '')
+            items[-1]['last_session_at'] = session_time
+            items[-1]['last_git_at'] = '' if session_time else worktree_reflog_time(path)
+    # Git worktrees can be nested inside the main checkout.
+    current_item = max((item for item in items if item['current']), key=lambda item: len(item['path']), default=None)
+    for item in items:
+        item['current'] = item is current_item
+        if item['current']:
+            item['remove_reasons'].append('현재 보고 있는 워크트리입니다.')
+        path = Path(item['path'])
+        if any(other is not item and Path(other['path']).is_relative_to(path) for other in items):
+            item['remove_reasons'].append('하위 경로에 다른 워크트리가 있습니다.')
+        item['removable'] = not item['remove_reasons']
+    return items
+
+
+def remove_worktree(workspace, store, payload):
+    if (not isinstance(payload, dict) or set(payload) - {'path', 'ignored_paths', 'commit', 'backup_branch'}
+            or not isinstance(payload.get('path'), str) or '\0' in payload['path']):
+        raise BoardError('삭제할 워크트리 경로를 확인해주세요.')
+    from .project_lifecycle import state
+    with store.connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        if state(db)['status'] != 'active':
+            raise BoardError('활성 프로젝트에서만 워크트리를 삭제할 수 있습니다.', 409)
+        item = next((row for row in worktrees(workspace, store.sessions())
+                     if row['path'] == payload['path']), None)
+        if not item:
+            raise BoardError('목록에서 워크트리를 찾을 수 없습니다.', 409)
+        if not item['removable']:
+            raise BoardError(' '.join(item['remove_reasons']), 409)
+        confirmed = payload.get('ignored_paths', [])
+        if not isinstance(confirmed, list) or any(not isinstance(path, str) for path in confirmed):
+            raise BoardError('확인한 무시 파일 목록이 잘못되었습니다.')
+        if set(item['ignored_paths']) - set(confirmed):
+            raise BoardError('확인하지 않은 Git 무시 파일 또는 폴더가 있습니다.', 409)
+        if ('commit' in payload or item['unpushed'] is None) and payload.get('commit') != item['commit']:
+            raise BoardError('체크아웃 커밋을 다시 확인해주세요.', 409)
+        if payload.get('backup_branch', '') != item['backup_branch']:
+            raise BoardError('커밋 보관 조건이 달라졌습니다. 목록을 다시 확인해주세요.', 409)
+        backup_branch = item['backup_branch']
+        if backup_branch:
+            saved = worktree_git(workspace, 'branch', '--', backup_branch, item['commit'])
+            if saved.returncode:
+                raise BoardError('보관용 브랜치를 만들지 못해 삭제를 중단했습니다.', 409)
+        # Killing Git during removal can leave a partially deleted checkout.
+        result = worktree_git(workspace, 'worktree', 'remove', '--', item['path'], timeout=None)
+        if result.returncode:
+            preserved = f' 보관용 브랜치 {backup_branch}은 유지됐습니다.' if backup_branch else ''
+            raise BoardError('Git이 워크트리 삭제를 거부했습니다. 폴더의 상태를 다시 확인해주세요.' + preserved, 409)
+    return {'removed': True, **({'backup_branch': backup_branch} if backup_branch else {})}
 
 
 def identity(workspace):

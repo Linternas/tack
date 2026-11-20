@@ -195,6 +195,9 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(payload,dict) or set(payload)-{'target','type','version','remove'} or not {'target','type','version'}<=set(payload) or type(payload.get('remove',False)) is not bool:
                         raise BoardError('관계 유형·대상·최신 version을 확인해주세요.')
                     return self.respond(store.link(relation_route[1],payload['target'],payload['type'],payload['version'],payload.get('remove',False)))
+                if path=='/api/worktrees/remove' and self.command=='POST':
+                    from .projects import remove_worktree
+                    return self.respond(remove_worktree(project['workspace'],store,payload))
                 if path=='/api/notes' and self.command=='POST':
                     from .notes import save_note
                     return self.respond(save_note(store,payload),201)
@@ -310,6 +313,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond({'tasks':store.all(),'saved_at':timestamp()})
             if re.fullmatch(r'/api/tasks/[A-Z0-9-]+',path):
                 return self.respond(store.detail(path.rsplit('/',1)[1]))
+            if path=='/api/worktrees':
+                from .projects import worktrees
+                items=worktrees(project['workspace'],store.sessions(include_completed=True),include_activity=True)
+                if project['status']=='archived':
+                    for item in items:
+                        item['removable']=False
+                        item['remove_reasons'].append('프로젝트가 보관 상태입니다.')
+                return self.respond({'worktrees':items})
             if path=='/api/sessions':
                 return self.respond({'sessions':store.sessions(query.get('all')==['1'])})
             if re.fullmatch(r'/api/sessions/RUN-[A-Z0-9]+',path):

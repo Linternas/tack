@@ -218,3 +218,18 @@ body:has(.app-navigation) main{margin-left:64px}
 .notes-board .filters { padding-top: 16px; }
 .notes-board table { min-width: 0; }
 .notes-board .text-button { text-align: left; overflow-wrap: anywhere; }
+
+.worktree-toolbar select { width: min(240px, 48vw); }
+#worktree-dialog { width: min(620px, calc(100vw - 32px)); max-height: 90dvh; overflow: auto; }
+#worktree-dialog > .dialog-header { position: sticky; top: 0; z-index: 1; background: var(--surface); }
+#worktree-list { max-height: none; overflow: visible; }
+#worktree-list article + article { border-top: 1px solid var(--line); padding-top: 12px; }
+#worktree-list code { display: block; margin-top: 4px; overflow-wrap: anywhere; }
+
+.worktree-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
+
+.worktree-feedback { padding: 12px 24px; background: var(--soft); overflow-wrap: anywhere; }
+#worktree-message { margin: 0; white-space: pre-wrap; }
+.worktree-feedback .worktree-actions { justify-content: flex-end; }
+
+#worktree-ignored-paths { margin: 8px 0 0; padding-left: 22px; font-family: monospace; }

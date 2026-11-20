@@ -116,6 +116,158 @@ class HttpTests(unittest.TestCase):
         self.assertIn("attachment", headers["Content-Disposition"])
         self.assertTrue(any(item["id"] == task["id"] for item in json.loads(body)["tasks"]))
 
+    def test_worktrees_use_git_and_match_only_active_checkout_sessions(self):
+        import subprocess
+        from agent_work.projects import worktrees
+
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'repo'
+            root.mkdir()
+            nested = root / 'linked checkout'
+            missing = Path(folder) / 'missing'
+            def git(*args):
+                subprocess.run(['git', '-C', str(root), *args], check=True, capture_output=True)
+            git('init', '-b', 'main')
+            git('-c', 'user.name=Test', '-c', 'user.email=test@example.com', '-c', 'commit.gpgsign=false',
+                'commit', '--allow-empty', '-m', 'initial')
+            git('worktree', 'add', '-b', 'feature', str(nested))
+            git('worktree', 'add', '--detach', str(missing))
+            missing.rename(Path(folder) / 'moved')
+            rows = worktrees(nested, [
+                {'workspace': str(root), 'status': 'completed', 'updated_at': '2026-11-20T01:00:00+00:00'},
+                {'workspace': str(nested), 'status': 'active'},
+                {'workspace': str(missing), 'status': 'active'},
+            ], include_activity=True)
+            self.assertEqual([(item['branch'], item['current'], item['active']) for item in rows],
+                             [('main', False, False), ('feature', True, True)])
+            self.assertEqual(Path(rows[1]['path']).resolve(), nested.resolve())
+            self.assertEqual(rows[0]['last_session_at'], '2026-11-20T01:00:00+00:00')
+            self.assertEqual(rows[1]['last_session_at'], '')
+            self.assertTrue(rows[1]['last_git_at'])
+        self.assertEqual(json.loads(self.request('GET', '/api/worktrees')[1]), {'worktrees': []})
+
+    def test_worktree_removal_blocks_unsafe_states_and_keeps_the_branch(self):
+        import subprocess
+        from agent_work.projects import remove_worktree, worktrees
+
+        with tempfile.TemporaryDirectory() as folder:
+            root, linked, remote = (Path(folder) / name for name in ('repo', 'linked', 'remote.git'))
+            root.mkdir()
+
+            def git(path, *args):
+                return subprocess.check_output(
+                    ['git', '-C', str(path), '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+                     '-c', 'commit.gpgsign=false', *args], stderr=subprocess.PIPE, text=True).strip()
+
+            git(root, 'init', '-b', 'main')
+            (root / '.gitignore').write_text('*.env\nnode_modules/\n.husky/_/\n.husky/local-hook\n')
+            git(root, 'add', '.gitignore')
+            git(root, 'commit', '-m', 'initial')
+            git(root, 'init', '--bare', str(remote))
+            git(root, 'remote', 'add', 'origin', str(remote))
+            git(root, 'worktree', 'add', '-b', 'feature', str(linked))
+            payload = {'path': str(linked.resolve())}
+            def row():
+                return worktrees(root, [])[1]
+            self.assertIsNone(row()['unpushed'])
+            with self.assertRaises(BoardError):
+                remove_worktree(root, self.store, payload)
+            git(linked, 'push', '-u', 'origin', 'feature')
+            git(linked, 'commit', '--allow-empty', '-m', 'unpublished')
+            self.assertEqual(row()['unpushed'], 1)
+            with self.assertRaises(BoardError):
+                remove_worktree(root, self.store, payload)
+            git(linked, 'push')
+            (linked / 'unsaved.txt').write_text('keep')
+            for artifact in ('node_modules/dependency', 'apps/web/node_modules/dependency', '.husky/_/husky.sh'):
+                target = linked / artifact
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.touch()
+            (linked / '.husky/local-hook').touch()
+            (linked / 'local.env').write_text('keep')
+            self.assertEqual(row()['uncommitted'], 1)
+            self.assertEqual(row()['ignored_paths'], ['.husky/local-hook', 'local.env'])
+            (linked / '.husky/local-hook').unlink()
+            with self.assertRaises(BoardError):
+                remove_worktree(root, self.store, payload)
+            (linked / 'unsaved.txt').unlink()
+            with self.assertRaises(BoardError):
+                remove_worktree(root, self.store, payload)
+            confirmed = {**payload, 'ignored_paths': ['local.env']}
+            task = self.store.write({'title': 'Worktree safety QA'})['task']
+            session = self.store.checkpoint({'task_id': task['id'], 'goal': 'test protection',
+                                            'next_action': 'check', 'workspace': str(linked)})['session']
+            with self.assertRaises(BoardError):
+                remove_worktree(root, self.store, confirmed)
+            self.store.checkpoint({'version': session['version'], 'status': 'completed'}, session['id'])
+            with self.assertRaises(BoardError):
+                remove_worktree(linked, self.store, confirmed)
+            (linked / 'additional.env').touch()
+            with self.assertRaises(BoardError):
+                remove_worktree(root, self.store, confirmed)
+            (linked / 'additional.env').unlink()
+            from unittest.mock import patch
+            with patch('agent_work.projects.subprocess.run', wraps=subprocess.run) as commands:
+                self.assertEqual(remove_worktree(root, self.store, {**confirmed, 'ignored_paths': ['local.env', 'already-gone.env']}),
+                                 {'removed': True})
+                remove = commands.call_args
+                self.assertEqual(remove.args[0][3:6], ['worktree', 'remove', '--'])
+                self.assertIsNone(remove.kwargs['timeout'])
+            self.assertFalse(linked.exists())
+            self.assertEqual(git(root, 'branch', '--list', 'feature'), 'feature')
+
+    def test_detached_worktree_removes_shared_commit_or_preserves_unique_commit(self):
+        import subprocess
+        from agent_work.projects import remove_worktree, worktrees
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve() / 'repo'
+            root.mkdir()
+            linked = root.parent / 'detached'
+
+            def git(path, *args):
+                return subprocess.check_output(
+                    ['git', '-C', str(path), '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+                     '-c', 'commit.gpgsign=false', *args], stderr=subprocess.PIPE, text=True).strip()
+
+            git(root, 'init', '-b', 'main')
+            (root / '.gitignore').write_text('.next/\n.swc/\ntsconfig.tsbuildinfo\nAGENTS.md\n')
+            git(root, 'add', '.gitignore')
+            git(root, 'commit', '-m', 'initial')
+            git(root, 'worktree', 'add', '--detach', str(linked))
+            row = worktrees(root, [])[1]
+            self.assertEqual(row['retained_by'], 'main')
+            self.assertFalse(row['backup_branch'])
+            self.assertEqual(remove_worktree(root, self.store, {'path': str(linked), 'commit': row['commit']}),
+                             {'removed': True})
+            git(root, 'worktree', 'add', '--detach', str(linked))
+            git(linked, 'commit', '--allow-empty', '-m', 'unique detached commit')
+            for name in ('.next', '.swc'):
+                (linked / name).mkdir()
+                (linked / name / 'generated').touch()
+            (linked / 'tsconfig.tsbuildinfo').touch()
+            (linked / 'AGENTS.md').touch()
+            row = worktrees(root, [])[1]
+            self.assertEqual(row['ignored_paths'], ['AGENTS.md'])
+            self.assertTrue(row['backup_branch'])
+            payload = {'path': str(linked), 'commit': row['commit'], 'ignored_paths': row['ignored_paths']}
+            with self.assertRaises(BoardError):
+                remove_worktree(root, self.store, payload)
+            payload['backup_branch'] = row['backup_branch']
+            (linked / 'unsaved').touch()
+            with self.assertRaises(BoardError):
+                remove_worktree(root, self.store, payload)
+            (linked / 'unsaved').unlink()
+            git_dir = Path(git(linked, 'rev-parse', '--absolute-git-dir'))
+            (git_dir / 'rebase-merge').mkdir()
+            with self.assertRaises(BoardError):
+                remove_worktree(root, self.store, payload)
+            (git_dir / 'rebase-merge').rmdir()
+            self.assertEqual(remove_worktree(root, self.store, payload),
+                             {'removed': True, 'backup_branch': row['backup_branch']})
+            self.assertFalse(linked.exists())
+            self.assertEqual(git(root, 'rev-parse', 'refs/heads/' + row['backup_branch']), row['commit'])
+
     def test_project_note_round_trip_search_and_version(self):
         before = self.store.all()
         payload = {"title": "Ideas", "body": "재현 절차\n두 번째 줄"}
