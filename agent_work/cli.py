@@ -75,20 +75,6 @@ def parser():
     p.add_argument('--project',help='전역 프로젝트 ID')
     sub=p.add_subparsers(dest='command',required=True)
     update=sub.add_parser('update',help='초기 설정을 재실행하지 않고 설치본 일괄 갱신');update.add_argument('--source',type=Path,help='개발용 로컬 Tack 소스 폴더')
-    herdr=sub.add_parser('herdr',help='Herdr 실행 세션과 작업 연결').add_subparsers(dest='herdr_action',required=True)
-    for action in ('inspect','bind','unbind'):
-        item=herdr.add_parser(action);item.add_argument('address')
-        if action=='inspect':item.add_argument('--query',default='')
-        else:
-            item.add_argument('--session',required=True)
-            item.add_argument('--from-task',required=action=='unbind')
-            if action=='bind':item.add_argument('task_id')
-    office=herdr.add_parser('team',help='Herdr에서 프로젝트 오케스트레이션 운영')
-    office.add_argument('--folder',required=True)
-    office.add_argument('--action',choices=['status','connect','create','assign','approve','run','pause','reply','retry','accept'],default='status')
-    office.add_argument('--goal')
-    office.add_argument('--parent',help='역할 직원을 표시할 Herdr 원본 터미널')
-    office.add_argument('--payload',default='{}')
     init=sub.add_parser('init'); init.add_argument('--local',action='store_true'); init.add_argument('--name'); init.add_argument('--link'); init.add_argument('--source-root',action='append')
     sub.add_parser('projects').add_argument('--all',action='store_true',help='보관 프로젝트 포함')
     project_actions=sub.add_parser('project').add_subparsers(dest='project_action',required=True)
@@ -159,9 +145,6 @@ def parser():
 
 
 def run(args):
-    if args.command=='herdr':
-        from .herdr import dispatch
-        return emit(dispatch(args))
     if args.command=='update':
         from .update import update
         result=update(args.source);emit(result)
