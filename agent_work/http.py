@@ -69,6 +69,7 @@ class Handler(BaseHTTPRequestHandler):
                 project=by_id(query['project'][0])
             store=self.server.store if project['id']==self.server.project['id'] else Store(project['db_path'])
             project={**project,**project_state(project.get('db_path',self.server.store.path))}
+            note_route=re.fullmatch(r'/api/notes/(NOTE-[A-F0-9]{32})',path)
             extension=path.startswith(('/api/goals','/api/team/','/api/orchestration','/api/workforce','/api/organization','/api/demo-days','/api/session-office')) or path in {'/goals','/goals.html','/goals.js','/goals.css','/team','/workforce.html','/workforce.js','/workforce.css','/office.js','/office.css','/office-scene.js','/office-art.js','/organization.js','/session-office.js','/office-demo-stage.png','/office-atlas.png','/office-avatar-0.png','/office-avatar-1.png','/office-avatar-3.png','/office-avatar-2.png','/office-avatar-6.png','/office-avatar-7.png','/office-avatar-5.png','/office-avatar-4.png','/office-avatar-9.png','/office-avatar-8.png','/office-room.png','/office-avatar-11.png','/office-avatar-10.png'}
             if extension:
                 if not self.server.harness:raise BoardError('프로젝트 로컬 오케스트레이션에서만 제공됩니다.',404)
@@ -194,6 +195,15 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(payload,dict) or set(payload)-{'target','type','version','remove'} or not {'target','type','version'}<=set(payload) or type(payload.get('remove',False)) is not bool:
                         raise BoardError('관계 유형·대상·최신 version을 확인해주세요.')
                     return self.respond(store.link(relation_route[1],payload['target'],payload['type'],payload['version'],payload.get('remove',False)))
+                if path=='/api/worktrees/remove' and self.command=='POST':
+                    from .projects import remove_worktree
+                    return self.respond(remove_worktree(project['workspace'],store,payload))
+                if path=='/api/notes' and self.command=='POST':
+                    from .notes import save_note
+                    return self.respond(save_note(store,payload),201)
+                if note_route and self.command=='PATCH':
+                    from .notes import save_note
+                    return self.respond(save_note(store,payload,note_route[1]))
                 if path=='/api/tasks' and self.command=='POST':
                     return self.respond(store.write(payload),201)
                 if re.fullmatch(r'/api/tasks/[A-Z0-9-]+',path) and self.command=='PATCH':
@@ -292,10 +302,25 @@ class Handler(BaseHTTPRequestHandler):
             relation_route=re.fullmatch(r'/api/tasks/([A-Z0-9-]+)/relations',path)
             if relation_route:
                 return self.respond(store.relationships(relation_route[1],limit=int(query.get('limit',['10'])[0]),offset=int(query.get('offset',['0'])[0])))
+            if path=='/api/notes':
+                from .notes import list_notes
+                return self.respond(list_notes(store,query.get('q',[''])[0][:300],
+                                               max(0,min(1000000,int(query.get('offset',['0'])[0])))))
+            if note_route:
+                from .notes import get_note
+                return self.respond(get_note(store,note_route[1]))
             if path=='/api/tasks':
                 return self.respond({'tasks':store.all(),'saved_at':timestamp()})
             if re.fullmatch(r'/api/tasks/[A-Z0-9-]+',path):
                 return self.respond(store.detail(path.rsplit('/',1)[1]))
+            if path=='/api/worktrees':
+                from .projects import worktrees
+                items=worktrees(project['workspace'],store.sessions(include_completed=True),include_activity=True)
+                if project['status']=='archived':
+                    for item in items:
+                        item['removable']=False
+                        item['remove_reasons'].append('프로젝트가 보관 상태입니다.')
+                return self.respond({'worktrees':items})
             if path=='/api/sessions':
                 return self.respond({'sessions':store.sessions(query.get('all')==['1'])})
             if re.fullmatch(r'/api/sessions/RUN-[A-Z0-9]+',path):
@@ -303,7 +328,8 @@ class Handler(BaseHTTPRequestHandler):
             if re.fullmatch(r'/api/resume/[A-Z0-9-]+',path):
                 return self.respond(store.resume(path.rsplit('/',1)[1]))
             if path=='/api/export':
-                return self.respond({'format':2,'exported_at':timestamp(),'tasks':store.all(),'sessions':store.sessions(True)},extra={'Content-Disposition':'attachment; filename="tack.json"'})
+                from .notes import export_notes
+                return self.respond({'format':2,'exported_at':timestamp(),'tasks':store.all(),'sessions':store.sessions(True),'notes':export_notes(store)},extra={'Content-Disposition':'attachment; filename="tack.json"'})
             if path=='/api/documents':
                 return self.respond({'documents':store.documents()})
             if re.fullmatch(r'/api/documents/DOC-[A-Z0-9]+',path):
@@ -317,9 +343,9 @@ class Handler(BaseHTTPRequestHandler):
             if path=='/documents':
                 from .documents import render_index
                 return self.respond(render_index(store,project),mime='text/html; charset=utf-8')
-            assets={'/':'index.html','/index.html':'index.html','/qa':'qa.html','/qa/':'qa.html','/qa.html':'qa.html','/sessions':'sessions.html','/projects':'projects.html','/goals':'goals.html','/usage':'usage.html','/team':'workforce.html'}
+            assets={'/notes':'notes.html','/':'index.html','/index.html':'index.html','/qa':'qa.html','/qa/':'qa.html','/qa.html':'qa.html','/sessions':'sessions.html','/projects':'projects.html','/goals':'goals.html','/usage':'usage.html','/team':'workforce.html'}
             name=assets.get(path,path.lstrip('/'))
-            if name not in {'index.html','qa.html','sessions.html','dashboard.js','dashboard.css','qa.js','qa.css','common.js','sessions.js','projects.html','projects.js','goals.html','goals.js','goals.css','usage.html','usage.js','usage.css','workforce.html','workforce.js','workforce.css','office.js','office.css','office-scene.js','office-art.js','organization.js','session-office.js','office-demo-stage.png','office-atlas.png','office-avatar-0.png','office-avatar-1.png','office-avatar-3.png','office-avatar-2.png','office-avatar-6.png','office-avatar-7.png','office-avatar-5.png','office-avatar-4.png','office-avatar-9.png','office-avatar-8.png','office-room.png','office-avatar-11.png','office-avatar-10.png'}:
+            if name not in {'notes.html','notes.js','index.html','qa.html','sessions.html','dashboard.js','dashboard.css','qa.js','qa.css','common.js','sessions.js','projects.html','projects.js','goals.html','goals.js','goals.css','usage.html','usage.js','usage.css','workforce.html','workforce.js','workforce.css','office.js','office.css','office-scene.js','office-art.js','organization.js','session-office.js','office-demo-stage.png','office-atlas.png','office-avatar-0.png','office-avatar-1.png','office-avatar-3.png','office-avatar-2.png','office-avatar-6.png','office-avatar-7.png','office-avatar-5.png','office-avatar-4.png','office-avatar-9.png','office-avatar-8.png','office-room.png','office-avatar-11.png','office-avatar-10.png'}:
                 raise BoardError('경로를 찾을 수 없습니다.',404)
             mime={'.html':'text/html','.css':'text/css','.js':'application/javascript','.png':'image/png'}[Path(name).suffix]
             return self.respond((ASSETS/name).read_bytes(),mime=mime+'; charset=utf-8')

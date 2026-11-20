@@ -70,7 +70,7 @@ def preview(project):
             'preserved':['프로젝트 소스 폴더','Codex·Orca 원본 대화','프로젝트 외부에 복사한 백업','설치된 프로젝트 하네스']}
     with access(path,create=False),closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=10)) as db:
         try:
-            for table in ['tasks','sessions','goals','executions','documents','observations']:
+            for table in ['tasks','sessions','goals','executions','documents','notes','observations']:
                 if db.execute('SELECT 1 FROM sqlite_master WHERE name=?',(table,)).fetchone():result['counts'][table]=db.execute('SELECT COUNT(*) FROM '+table).fetchone()[0]
             try:idle(db);result['can_archive']=True
             except BoardError as error:result['can_archive']=False;result['blocked_reason']=str(error)

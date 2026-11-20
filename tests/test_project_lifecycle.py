@@ -161,4 +161,34 @@ class ProjectLifecycleTests(unittest.TestCase):
             self.assertEqual(request('GET','/api/context')[0],200)
         finally:server.shutdown();server.server_close();thread.join()
 
+    def test_archived_legacy_project_can_save_note_after_restore_without_restart(self):
+        with self.store.connect() as db:
+            db.execute('DROP TABLE IF EXISTS notes')
+        self.archive()
+        archived_store = Store(self.project['db_path'])
+        with BoardServer(('127.0.0.1', 0), archived_store, self.project) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+
+            def request(method, path, payload=None):
+                with closing(http.client.HTTPConnection('127.0.0.1', server.server_port)) as connection:
+                    connection.request(method, path, json.dumps(payload) if payload is not None else None,
+                                       {'Content-Type': 'application/json'})
+                    response = connection.getresponse()
+                    return response.status, json.loads(response.read())
+
+            try:
+                payload = {'title': 'Restored note', 'body': 'Survives a dashboard restore'}
+                self.assertEqual(request('POST', '/api/notes', payload)[0], 409)
+                with archived_store.connect() as db:
+                    self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='notes'").fetchone())
+                path = f"/api/projects/{self.project['id']}/restore"
+                self.assertEqual(request('POST', path, {'version': 2})[0], 200)
+                status, note = request('POST', '/api/notes', payload)
+                self.assertEqual(status, 201, note)
+                self.assertEqual(request('GET', '/api/notes/' + note['id']), (200, note))
+            finally:
+                server.shutdown()
+                thread.join()
+
 if __name__=='__main__':unittest.main()

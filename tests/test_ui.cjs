@@ -138,7 +138,7 @@ test('initial view separates ongoing work from completed history', async (t) => 
   assert.deepEqual(ui.rows(), ['QA-001', 'QA-002']);
   await ui.change('record-view', 'done');
   assert.deepEqual(ui.rows(), ['DONE-001']);
-  assert.equal(ui.document.querySelector('#metrics [aria-pressed="true"]'), null);
+  assert.equal(ui.document.querySelector('#metrics [aria-pressed="true"]').dataset.queue, 'done');
   await ui.click('#reset-filters');
   assert.equal(ui.rows().length, 5);
   assert.equal(ui.$('record-view').value, 'all');
@@ -156,6 +156,72 @@ test('search, category and status filters apply without fetching product APIs', 
   await ui.change('search','일치하지않음');
   assert.equal(ui.rows().length,0);
   assert.ok(ui.calls.every((call) => call.url.startsWith('/api/')));
+});
+
+test('worktree deletion explains blocks and shows confirmation and completion', async (t) => {
+  const ui = await setup(t);
+  const clean = {path: '/repo/clean', branch: '', head: 'abcdef0', commit: 'abcdef0123456789', backup_branch: 'tack/archive/abcdef0123456789', removable: true, uncommitted: 0, unpushed: 0, ignored_paths: ['.env.local', 'node_modules/']};
+  const blocked = {...clean, path: '/repo', removable: false, remove_reasons: ['기본 워크트리입니다.']};
+  const originalFetch = ui.window.fetch;
+  let removed = false;
+  let added = false;
+  let finish;
+  ui.window.fetch = async (url, options) => {
+    if (url === '/api/worktrees') {
+      return {ok: true, json: async () => ({worktrees: structuredClone(removed ? [blocked] : [blocked, clean])})};
+    }
+    if (url === '/api/worktrees/remove') {
+      if (!added) {
+        added = true;
+        clean.ignored_paths.push('new.cache');
+        return {ok: false, status: 409, json: async () => ({error: '확인하지 않은 항목입니다.'})};
+      }
+      assert.deepEqual(JSON.parse(options.body), {path: clean.path, commit: clean.commit, backup_branch: clean.backup_branch, ignored_paths: clean.ignored_paths});
+      await new Promise(resolve => { finish = resolve; });
+      removed = true;
+      return {ok: true, json: async () => ({removed: true, backup_branch: clean.backup_branch})};
+    }
+    return originalFetch(url, options);
+  };
+  await ui.click('#open-worktrees');
+  await ui.click('[data-remove-worktree="0"]');
+  assert.match(ui.$('worktree-message').textContent, /기본 워크트리/);
+  assert.equal(ui.$('worktree-confirmation').hidden, true);
+  assert.match(ui.$('worktree-ignored-paths').textContent, /node_modules/);
+  await ui.click('[data-remove-worktree="1"]');
+  assert.equal(ui.$('worktree-confirmation').hidden, false);
+  assert.match(ui.$('worktree-message').textContent, /repo\/clean/);
+  assert.equal(ui.$('confirm-worktree-remove').textContent, '브랜치 보관 후 삭제');
+  assert.deepEqual([...ui.$('worktree-ignored-paths').children].map(el => el.textContent), clean.ignored_paths);
+  await ui.click('#cancel-worktree-remove');
+  assert.equal(finish, undefined);
+  await ui.click('[data-remove-worktree="1"]');
+  await ui.click('#confirm-worktree-remove');
+  assert.match(ui.$('worktree-message').textContent, /새로 발견된 항목 1개/);
+  assert.match(ui.$('worktree-ignored-paths').textContent, /새로 발견 · new.cache/);
+  await ui.click('#confirm-worktree-remove');
+  assert.match(ui.$('worktree-message').textContent, /삭제 중/);
+  finish();
+  await new Promise(setImmediate);
+  assert.match(ui.$('worktree-message').textContent, /삭제했습니다/);
+  assert.ok(ui.$('worktree-message').textContent.includes(clean.backup_branch));
+  assert.equal(ui.document.querySelector('[data-remove-worktree="1"]'), null);
+});
+
+test('drawer copies only the open ticket ID and reports clipboard failure', async (t) => {
+  const ui = await setup(t);
+  await ui.click('[data-open="ISSUE-001"]');
+  await ui.click('#copy-detail-id');
+  assert.deepEqual(ui.clipboard, ['ISSUE-001']);
+  assert.equal(ui.$('copy-detail-status').textContent, '복사됨');
+  await ui.click('#close-detail');
+  await ui.click('[data-open="QA-001"]');
+  assert.equal(ui.$('copy-detail-status').textContent, '');
+  await ui.click('#copy-detail-id');
+  assert.deepEqual(ui.clipboard, ['ISSUE-001', 'QA-001']);
+  ui.window.navigator.clipboard.writeText = async () => { throw new Error('NotAllowedError'); };
+  await ui.click('#copy-detail-id');
+  assert.equal(ui.$('copy-detail-status').textContent, '복사 실패');
 });
 
 test('issue copy uses the current detail and exports agent context without UI or database metadata', async (t) => {
@@ -419,8 +485,8 @@ test('queue cards form one disjoint partition and exclude QA and issues from tod
   assert.equal(ui.$('category-filter'),null);
   assert.equal(ui.$('edit-category'),null);
   assert.equal(ui.$('edit-status'),null);
-  assert.equal(ui.$('metrics').querySelectorAll('[data-queue]').length,5);
-  for(const queue of ['todo','in_progress','issue','qa','waiting']) {
+  assert.equal(ui.$('metrics').querySelectorAll('[data-queue]').length,6);
+  for(const queue of ['todo','in_progress','issue','qa','waiting','done']) {
     await ui.change('search','일치하지않는검색어');await ui.change('priority-filter','P1');await ui.change('record-view','done');
     await ui.click(`#metrics [data-queue="${queue}"]`);
     const expected=fixture.filter(task=>queueOf(task)===queue).map(task=>task.id);
