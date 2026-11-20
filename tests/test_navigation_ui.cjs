@@ -2,8 +2,8 @@ const {test}=require('node:test'),assert=require('node:assert/strict'),fs=requir
 const asset=n=>fs.readFileSync(path.join(__dirname,'../agent_work/assets',n),'utf8');const tick=async()=>{await new Promise(setImmediate);await new Promise(setImmediate)};
 function setup(t,html,enabled=true){const dom=new JSDOM(html,{url:'http://127.0.0.1/?project=fixture',runScripts:'outside-only'});t.after(()=>dom.window.close());dom.window.fetch=async()=>({ok:true,json:async()=>({project:{id:'fixture',name:'Fixture'},projects:[],orchestration_enabled:enabled})});return dom.window;}
 
-const files=['index.html','qa.html','usage.html','goals.html','workforce.html','sessions.html','projects.html'];
-const routes=['/team','/','/sessions','/qa','/projects','/documents','/usage'];
+const files=['index.html','notes.html','qa.html','usage.html','goals.html','workforce.html','sessions.html','projects.html'];
+const routes=['/team','/','/notes','/sessions','/qa','/projects','/documents','/usage'];
 test('every page keeps the same ordered SVG navigation in Core and orchestration',async t=>{
  for(const enabled of [true,false])for(const file of files){
   const w=setup(t,asset(file),enabled);w.eval(asset('common.js'));await tick();
@@ -24,4 +24,46 @@ test('Core keeps team entry visible and blocks unsupported navigation',async t=>
 });
 test('active page is reflected without changing the menu',async t=>{
  const w=setup(t,asset('workforce.html'));w.history.replaceState(null,'','/team?project=fixture');w.eval(asset('common.js'));await tick();assert.equal(w.document.querySelector('.sidebar [aria-current="page"]').getAttribute('href'),'/team?project=fixture');
+});
+
+test('project notes can be created, found by body, and opened for editing', async t => {
+  const w = setup(t, asset('notes.html'), false);
+  w.history.replaceState(null, '', '/notes?project=fixture');
+  const d = w.document;
+  const editor = d.getElementById('note-editor');
+  editor.showModal = () => editor.setAttribute('open', '');
+  editor.close = () => editor.removeAttribute('open');
+  const form = d.getElementById('note-form');
+  const context = w.fetch;
+  let note;
+  w.fetch = async (path, options) => {
+    const url = new URL(path, w.location.origin);
+    assert.equal(url.searchParams.get('project'), 'fixture');
+    if (url.pathname === '/api/context') return context();
+    if (options?.method === 'POST') note = {
+      ...JSON.parse(options.body), id: 'NOTE-1', version: 1, updated_at: '2026-11-19T01:00:00Z'
+    };
+    const query = url.searchParams.get('q');
+    const data = url.pathname === '/api/notes' && !options?.method
+      ? {notes: note?.body.includes(query) ? [note] : [], has_more: false}
+      : note;
+    return {ok: true, json: async () => data};
+  };
+  w.eval(asset('common.js'));
+  w.eval(asset('notes.js'));
+  await tick();
+  d.getElementById('add-note').click();
+  form.elements.namedItem('title').value = '<아이디어>';
+  form.elements.namedItem('body').value = '본문 키워드';
+  form.dispatchEvent(new w.Event('submit', {cancelable: true}));
+  await tick();
+  d.getElementById('note-query').value = '키워드';
+  d.getElementById('note-search').dispatchEvent(new w.Event('submit', {cancelable: true}));
+  await tick();
+  const button = d.querySelector('#note-rows button');
+  assert.equal(button.textContent, '<아이디어>');
+  button.click();
+  await tick();
+  assert.ok(editor.open);
+  assert.equal(form.elements.namedItem('body').value, '본문 키워드');
 });

@@ -214,3 +214,7 @@ body:has(.app-navigation) main{margin-left:64px}
 .detail-page-path { margin-top: 12px; padding: 10px; background: var(--soft); border-radius: 6px; }
 .detail-page-path h3 { margin: 0 0 5px; font-size: 11px; color: var(--muted); }
 .detail-page-path code { font-size: 12px; overflow-wrap: anywhere; }
+
+.notes-board .filters { padding-top: 16px; }
+.notes-board table { min-width: 0; }
+.notes-board .text-button { text-align: left; overflow-wrap: anywhere; }

@@ -16,7 +16,7 @@
     try {
       const detail=await api(`/api/projects/${encodeURIComponent(project.id)}`);if(current!==sequence)return;selected=detail;
       $('project-action-scope').textContent=kind==='archive'?'기록을 유지하고 기본 목록에서 숨깁니다. 보관 중에는 읽기 전용입니다. 외부 Codex·Orca 작업은 직접 종료한 뒤 진행하세요.':kind==='restore'?'같은 프로젝트 ID와 작업·세션 기록을 유지한 채 기본 목록으로 되돌립니다.':'이 프로젝트의 Tack 작업·세션·목표·실행·메시지·문서 기록을 영구 삭제합니다. 이 작업은 보관 해제로 복구할 수 없습니다.';
-      const names={tasks:'작업',sessions:'세션',goals:'목표',executions:'실행',documents:'보관 문서',observations:'수신 이벤트'};
+      const names={tasks:'작업',sessions:'세션',goals:'목표',executions:'실행',documents:'보관 문서',notes:'노트',observations:'수신 이벤트'};
       $('project-action-counts').textContent=Object.entries(detail.counts).map(([key,value])=>`${names[key] || key}: ${value}`).join('\n');
       $('project-action-preserved').textContent=`유지: ${detail.preserved.join(', ')}`;
       $('delete-options').hidden=kind!=='delete';$('project-backups').textContent=detail.backup_paths.length?`기본은 백업 보존입니다. 함께 삭제 가능한 경로:\n${detail.backup_paths.join('\n')}`:'Tack 관리 백업·이관 자료가 없습니다.';

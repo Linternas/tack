@@ -116,6 +116,29 @@ class HttpTests(unittest.TestCase):
         self.assertIn("attachment", headers["Content-Disposition"])
         self.assertTrue(any(item["id"] == task["id"] for item in json.loads(body)["tasks"]))
 
+    def test_project_note_round_trip_search_and_version(self):
+        before = self.store.all()
+        payload = {"title": "Ideas", "body": "재현 절차\n두 번째 줄"}
+        self.assertEqual(self.request("GET", "/notes")[0], 200)
+        self.assertEqual(self.request("POST", "/api/notes", {**payload, "body": " "})[0], 400)
+        status, body, _ = self.request("POST", "/api/notes", payload)
+        self.assertEqual(status, 201)
+        note = json.loads(body)
+        path = f'/api/notes/{note["id"]}'
+        edit = {**payload, "title": "Updated", "version": note["version"]}
+        self.assertEqual(self.request("PATCH", path, edit)[0], 200)
+        self.assertEqual(self.request("PATCH", path, edit)[0], 409)
+        status, body, _ = self.request("GET", path)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body)["body"], payload["body"])
+        from urllib.parse import urlencode
+        status, body, _ = self.request("GET", "/api/notes?" + urlencode({"q": "두 번째"}))
+        self.assertEqual(status, 200)
+        self.assertEqual([item["title"] for item in json.loads(body)["notes"]], ["Updated"])
+        _, body, _ = self.request("GET", "/api/export")
+        self.assertEqual(json.loads(body)["notes"][0]["id"], note["id"])
+        self.assertEqual(self.store.all(), before)
+
     def test_invalid_write_returns_json_and_does_not_save(self):
         before = len(self.store.all())
         status, body, _ = self.request("POST", "/api/tasks", {"title": ""})

@@ -15,7 +15,7 @@
   if(settings){settings.className='button secondary';settings.textContent='팀 설정';document.querySelector('main .heading-actions')?.prepend(settings);}
   if(pickerInSidebar){pickerInSidebar.classList.add('shell-project-picker');document.querySelector('main')?.prepend(pickerInSidebar);}
   sidebar.className='sidebar app-navigation';sidebar.setAttribute('aria-label','앱 메뉴');
-  const menu=[['/team','팀 워크스페이스'],['/','작업 보드'],['/sessions','작업 재개·세션'],['/qa','QA 워크플로우'],['/projects','전체 프로젝트'],['/documents','보관 문서'],['/usage','사용량']];
+  const menu=[['/team','팀 워크스페이스'],['/','작업 보드'],['/notes','노트'],['/sessions','작업 재개·세션'],['/qa','QA 워크플로우'],['/projects','전체 프로젝트'],['/documents','보관 문서'],['/usage','사용량']];
   const current=location.pathname==='/goals'?'/team':location.pathname.startsWith('/documents/')?'/documents':location.pathname;
   sidebar.innerHTML='<a class="brand" href="/" aria-label="Tack 홈" title="Tack"><span class="brand-symbol">T</span></a><nav aria-label="주 메뉴">'+menu.map(([href,label])=>`<a class="nav-item${current===href?' active':''}" href="${href}" title="${label}" aria-label="${label}"${current===href?' aria-current="page"':''}><span class="nav-icon" aria-hidden="true"></span><span class="nav-label">${label}</span></a>`).join('')+'</nav>';
   // Older pages had their own navigation row in place of the shared sidebar.
@@ -37,7 +37,7 @@
     settings:'<path d="M4 7h5m4 0h7M4 17h9m4 0h3"/><circle cx="11" cy="7" r="2"/><circle cx="15" cy="17" r="2"/>'
   };
   window.tackIcon=name=>iconPaths[name]?`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${iconPaths[name]}</svg>`:'';
-  const navIcons={'/':'grid','/goals':'team','/team':'team','/sessions':'sessions','/projects':'projects','/documents':'documents','/usage':'usage','/qa':'qa'};
+  const navIcons={'/':'grid','/goals':'team','/team':'team','/sessions':'sessions','/projects':'projects','/documents':'documents','/notes':'documents','/usage':'usage','/qa':'qa'};
   for(const link of document.querySelectorAll('.sidebar .nav-item')){
     const icon=link.matches('a[href]')?navIcons[new URL(link.getAttribute('href'),location.origin).pathname]:link.id==='open-settings'?'settings':null;
     if(!icon)continue;

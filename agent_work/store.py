@@ -112,6 +112,9 @@ class Store:
                     kind TEXT NOT NULL, digest TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL,
                     UNIQUE(source,digest));
                 CREATE INDEX IF NOT EXISTS documents_source ON documents(source,created_at);
+                CREATE TABLE IF NOT EXISTS notes (
+                    id TEXT PRIMARY KEY, title TEXT NOT NULL, body TEXT NOT NULL,
+                    version INTEGER NOT NULL, updated_at TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS imports (
                     source TEXT PRIMARY KEY, digest TEXT NOT NULL, session_id TEXT, imported_at TEXT NOT NULL);
 
