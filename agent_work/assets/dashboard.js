@@ -277,7 +277,6 @@
     const refs = (ref) => ref ? `<code class="monospace">${escape(ref.path)}${ref.line ? ':' + escape(ref.line) : ''}</code>` : '';
     const node = (item) => `<strong>${escape(item.label)}</strong> <span class="muted">${escape(item.kind)}</span>${refs(item.ref)}`;
     const nodes = new Map(map.nodes.map(item => [item.id, item]));
-    const related = new Set(map.edges.flatMap(edge => [edge.from, edge.to]));
     const evidenceNames = {spec: '기획 기준', code: '코드 확인', browser: '브라우저 실측'};
     const warning = map.stale === true ? '현재 작업본이 저장 기준과 다릅니다. 최신 근거를 다시 확인하세요.'
       : map.stale === null ? '현재 체크아웃의 커밋을 확인할 수 없습니다.' : '';
@@ -370,7 +369,8 @@
           ? '연결된 코드 · ' + [...highlighted].map(id => nodes.get(id).label).join(' · ') : '';
       });
 
-      const isolated = visible.filter(item => !related.has(item.id));
+      const shownEndpoints = new Set(rows.flatMap(edge => [edge.from, edge.to]));
+      const isolated = visible.filter(item => !shownEndpoints.has(item.id));
       edges.innerHTML = (rows.length ? `
         <table class="task-map-table">
           <thead><tr><th scope="col">출발</th><th scope="col">관계 →</th><th scope="col">대상</th></tr></thead>

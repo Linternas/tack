@@ -200,8 +200,8 @@ test('ticket map links API to related flows and tests in both directions', async
     return Promise.resolve({ok: true, json: async () => ({map: {
       revision: 'b'.repeat(40), stale: false, version: 1,
       nodes: [
-        {id:'hook',kind:'hook',label:'useSentReviewInbox'},
-        {id:'client',kind:'api',label:'reviewInboxApi.fetch'},
+        {id:'hook',kind:'hook',label:'useSentReviewInbox',ref:{path:'src/hooks.ts',line:42}},
+        {id:'client',kind:'api',label:'reviewInboxApi.fetch',ref:{path:'src/client.ts',line:27}},
         {id:'endpoint',kind:'api',label:'GET review-rows'},
         {id:'test',kind:'test',label:'정렬 및 기간 테스트'},
         {id:'drawer',kind:'ui',label:'상세 창'},
@@ -214,6 +214,7 @@ test('ticket map links API to related flows and tests in both directions', async
       flows: [
         {step:'올린 요청',condition:'탭 선택',outcome:'목록 조회',kind:'code',node_ids:['hook','client','endpoint','test']},
         {step:'상세 열기',condition:'행 선택',outcome:'상세 표시',kind:'code',node_ids:['drawer']},
+        {step:'조회 훅 준비',condition:'탭 진입',outcome:'조회 조건 확인',kind:'code',node_ids:['hook']},
       ],
     }})});
   };
@@ -231,6 +232,14 @@ test('ticket map links API to related flows and tests in both directions', async
     /useSentReviewInbox.*reviewInboxApi.fetch.*GET review-rows/);
   assert.ok(map.querySelector('[data-graph-node="hook"].linked'));
   assert.equal(map.querySelector('[data-graph-node="drawer"]'), null);
+  const evidence = ui.$('task-map-edges');
+  evidence.closest('details').open = true;
+  assert.match(evidence.querySelector('tbody').textContent, /src\/hooks\.ts:42/);
+  assert.equal(evidence.querySelector('ul'), null);
+  await ui.click('.task-map-flow [data-map-flow="2"]');
+  assert.ok(map.querySelector('[data-graph-node="hook"].linked'));
+  assert.equal(evidence.querySelector('table'), null);
+  assert.deepEqual([...evidence.querySelectorAll('code')].map(item => item.textContent), ['src/hooks.ts:42']);
   await ui.click('[data-map-clear]');
   assert.equal(ui.$('task-map-focus').hidden, true);
   assert.equal(map.querySelectorAll('[data-map-flow-row].linked').length, 0);
