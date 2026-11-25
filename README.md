@@ -173,6 +173,36 @@ tack status --search '/ctms/workspaces'
 
 기존 작업은 버전이 있는 수정 JSON에 `page_path`를 넣어 보완합니다. `/`로 시작하는 경로와 인증정보 없는 http(s) 주소를 지원하며 최대 2000자입니다. 확인한 UI 라우트를 기록하고 인증정보·비밀 쿼리 값은 제외합니다. 페이지가 없는 작업이나 아직 확인하지 않은 경로는 빈칸으로 둡니다. 목록 미리보기가 잘린 경우 `task show --section page_path --full`로 원문을 읽습니다.
 
+## 작업의 코드 영향 범위와 화면 흐름
+
+작업 상세에서 **코드 영향 범위 · 화면 흐름**을 열어, 해당 화면의 라우트부터 컴포넌트·API·테스트까지 연결을 확인할 수 있습니다. 방향 화살표로 코드 관계를 확인하고 노드를 선택해 들어오고 나가는 관계만 볼 수 있습니다. 화면 흐름은 단계 → 조건 → 결과를 분기별로 보여주고, **기획 기준**, **코드 근거**, **브라우저 관측**을 구분합니다. 오래된 브라우저 관측에는 관측 당시 환경과 범위를 기록합니다.
+
+Tack은 검토한 연결을 티켓과 같은 프로젝트 DB에 저장합니다. 첫 버전은 팀이나 에이전트가 확인한 관계를 넣어 보는 방식입니다. 원본 코드와 브라우저 경로의 자동 수집은 별도 기능입니다.
+
+```sh
+tack map set TASK_ID --json /tmp/task-map.json
+tack map show TASK_ID
+```
+
+저장할 JSON에는 현재 지도 `version`(처음은 `0`), 기준 Git 커밋 `revision`(전체 SHA), 연결 대상 `nodes`, 연결 `edges`, 화면 분기 `flows`를 넣습니다. 예를 들어 화면 진입과 조회 훅 사이의 연결은 다음처럼 기록합니다. 예시의 커밋과 파일은 실제 근거로 바꿉니다.
+
+```json
+{
+  "version": 0,
+  "revision": "0000000000000000000000000000000000000000",
+  "nodes": [
+    {"id": "screen", "kind": "route", "label": "요청 목록", "ref": {"path": "src/app/requests/page.tsx", "line": 12}},
+    {"id": "query", "kind": "hook", "label": "useRequests", "ref": {"path": "src/requests/queries.ts", "line": 26}}
+  ],
+  "edges": [{"from": "screen", "to": "query", "label": "목록 조회"}],
+  "flows": [
+    {"step": "목록 진입", "condition": "응답에 행이 없음", "outcome": "빈 상태 표시", "kind": "code", "node_ids": ["screen", "query"], "ref": {"path": "src/app/requests/page.tsx", "line": 34}}
+  ]
+}
+```
+
+화면 분기의 `node_ids`에 근거를 확인한 훅·API·테스트를 연결하면 그래프와 분기를 양방향으로 선택할 수 있습니다. 수정할 때는 `map show`의 최신 버전을 사용합니다. 파일 경로는 프로젝트 상대 경로이며 줄 번호는 1부터 셉니다. 브라우저 행에는 확인한 환경·결과나 Tack 검증 기록 등 실제 근거를 넣습니다. 저장한 기준과 현재 작업본이 다르거나 비교할 수 없으면 상세에서 확인 상태를 표시합니다.
+
 ## 단일 업무 목록
 
 업무의 기본 입력·조회·집계는 `queue` 하나를 사용합니다.

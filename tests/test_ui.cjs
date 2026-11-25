@@ -126,6 +126,153 @@ async function setup(context, fixture) {
   return { window, document, $, rows, change, click, submit, calls, records, clipboard, conflict: () => { forceConflict = true; }, offline: () => { offline = true; } };
 }
 
+async function toggleTaskMap(ui, open = true) {
+  const map = ui.document.querySelector('.task-map');
+  const toggled = new Promise(resolve => map.addEventListener('toggle', resolve, {once: true}));
+  map.open = open;
+  await toggled;
+  await tick();
+  return map;
+}
+
+test('ticket map loads on demand, filters both directions and labels evidence', async (t) => {
+  const ui = await setup(t);
+  const original = ui.window.fetch;
+  let requests = 0;
+  const revision = 'b'.repeat(40);
+  ui.window.fetch = (url, options) => {
+    if (url !== '/api/tasks/ISSUE-001/map') return original(url, options);
+    requests++;
+    return Promise.resolve({ok: true, json: async () => ({map: {
+      revision, stale: true, version: 1,
+      nodes: [
+        {id: 'route', kind: 'route', label: '결재함', ref: {path: 'src/page.tsx', line: 12}},
+        {id: 'hook', kind: 'hook', label: 'useReview'},
+        {id: 'api', kind: 'api', label: '<img src=x onerror=alert(1)>'},
+      ],
+      edges: [
+        {from: 'route', to: 'hook', label: '조회'},
+        {from: 'hook', to: 'api', label: '요청'},
+        {from: 'route', to: 'api', label: '다른 호출'},
+        {from: 'api', to: 'route', label: '되돌림'},
+      ],
+      flows: [
+        {step: '화면 진입', condition: '권한 있음', outcome: '결재함 열림', kind: 'spec', evidence: '기획안'},
+        {step: '권한 확인', condition: '조회 성공', outcome: '목록 표시', kind: 'code', ref: {path: 'src/page.tsx', line: 18}},
+        {step: '빈 목록', condition: '준비된 법인', outcome: '내 차례 0건', kind: 'browser', evidence: 'QA 기록'},
+      ],
+    }})});
+  };
+  await ui.click('[data-open="ISSUE-001"]');
+  assert.equal(requests, 0);
+  const map = await toggleTaskMap(ui);
+  assert.equal(requests, 1);
+  assert.match(map.textContent, new RegExp(revision));
+  assert.match(map.textContent, /현재 작업본이 저장 기준과 다릅니다/);
+  assert.match(map.textContent, /src\/page.tsx:12/);
+  assert.deepEqual([...map.querySelectorAll('.task-map-flow .badge')].map(badge => badge.textContent),
+    ['기획 기준', '코드 확인', '브라우저 실측']);
+  assert.equal(map.querySelector('img'), null);
+  assert.match(map.textContent, /<img src=x onerror=alert\(1\)>/);
+  assert.equal(map.querySelectorAll('#task-map-graph [data-graph-node]').length, 3);
+  assert.equal(map.querySelectorAll('#task-map-graph .map-edge[marker-end]').length, 4);
+  assert.equal(map.querySelectorAll('.task-map-flow-lane').length, 3);
+  assert.match(map.querySelector('.task-map-flow-lane').textContent, /결재함 열림/);
+  map.querySelector('#task-map-graph [data-graph-node="hook"]')
+    .dispatchEvent(new ui.window.MouseEvent('click', {bubbles: true, cancelable: true}));
+  assert.equal(ui.$('task-map-node').value, 'hook');
+  assert.deepEqual([...map.querySelectorAll('#task-map-graph .map-edge')].map(edge => [edge.dataset.from, edge.dataset.to]),
+    [['route', 'hook'], ['hook', 'api']]);
+  const rows = [...map.querySelectorAll('tbody tr')];
+  assert.deepEqual(rows.map(row => row.cells[1].textContent), ['조회', '요청']);
+  assert.match(rows[0].cells[2].textContent, /useReview/);
+  assert.match(rows[1].cells[0].textContent, /useReview/);
+  await toggleTaskMap(ui, false);
+  await toggleTaskMap(ui);
+  assert.equal(requests, 1);
+});
+
+test('ticket map links API to related flows and tests in both directions', async (t) => {
+  const ui = await setup(t);
+  const original = ui.window.fetch;
+  ui.window.fetch = (url, options) => {
+    if (url !== '/api/tasks/ISSUE-001/map') return original(url, options);
+    return Promise.resolve({ok: true, json: async () => ({map: {
+      revision: 'b'.repeat(40), stale: false, version: 1,
+      nodes: [
+        {id:'hook',kind:'hook',label:'useSentReviewInbox',ref:{path:'src/hooks.ts',line:42}},
+        {id:'client',kind:'api',label:'reviewInboxApi.fetch',ref:{path:'src/client.ts',line:27}},
+        {id:'endpoint',kind:'api',label:'GET review-rows'},
+        {id:'test',kind:'test',label:'정렬 및 기간 테스트'},
+        {id:'drawer',kind:'ui',label:'상세 창'},
+      ],
+      edges: [
+        {from:'hook',to:'client',label:'조회'},
+        {from:'client',to:'endpoint',label:'전송'},
+        {from:'client',to:'test',label:'검증'},
+      ],
+      flows: [
+        {step:'올린 요청',condition:'탭 선택',outcome:'목록 조회',kind:'code',node_ids:['hook','client','endpoint','test']},
+        {step:'상세 열기',condition:'행 선택',outcome:'상세 표시',kind:'code',node_ids:['drawer']},
+        {step:'조회 훅 준비',condition:'탭 진입',outcome:'조회 조건 확인',kind:'code',node_ids:['hook']},
+      ],
+    }})});
+  };
+  await ui.click('[data-open="ISSUE-001"]');
+  const map = await toggleTaskMap(ui);
+  map.querySelector('[data-graph-node="endpoint"]').dispatchEvent(new ui.window.MouseEvent('click', {bubbles: true}));
+  assert.match(ui.$('task-map-focus').textContent, /관련 화면 분기 1개.*올린 요청/s);
+  assert.match(ui.$('task-map-focus').textContent, /관련 테스트 1개.*정렬 및 기간 테스트/s);
+  assert.ok(map.querySelector('[data-graph-node="test"].linked'));
+  assert.ok(map.querySelector('[data-from="client"][data-to="test"]'));
+  assert.equal(map.querySelectorAll('[data-map-flow-row].linked').length, 1);
+  await ui.click('.task-map-flow [data-map-flow="0"]');
+  assert.equal(map.querySelector('.task-map-flow [data-map-flow="0"]').getAttribute('aria-pressed'), 'true');
+  assert.match(map.querySelector('[data-map-flow-row="0"] .task-map-flow-links').textContent,
+    /useSentReviewInbox.*reviewInboxApi.fetch.*GET review-rows/);
+  assert.ok(map.querySelector('[data-graph-node="hook"].linked'));
+  assert.equal(map.querySelector('[data-graph-node="drawer"]'), null);
+  const evidence = ui.$('task-map-edges');
+  evidence.closest('details').open = true;
+  assert.match(evidence.querySelector('tbody').textContent, /src\/hooks\.ts:42/);
+  assert.equal(evidence.querySelector('ul'), null);
+  await ui.click('.task-map-flow [data-map-flow="2"]');
+  assert.ok(map.querySelector('[data-graph-node="hook"].linked'));
+  assert.equal(evidence.querySelector('table'), null);
+  assert.deepEqual([...evidence.querySelectorAll('code')].map(item => item.textContent), ['src/hooks.ts:42']);
+  await ui.click('[data-map-clear]');
+  assert.equal(ui.$('task-map-focus').hidden, true);
+  assert.equal(map.querySelectorAll('[data-map-flow-row].linked').length, 0);
+  assert.ok(map.querySelector('[data-graph-node="drawer"]'));
+});
+
+test('ticket map retries after error and ignores a response for another open ticket', async (t) => {
+  const ui = await setup(t);
+  const original = ui.window.fetch;
+  let settle;
+  let requests = 0;
+  ui.window.fetch = (url, options) => {
+    if (url === '/api/tasks/QA-001/map') return Promise.resolve({ok: true, json: async () => ({map: null})});
+    if (url !== '/api/tasks/ISSUE-001/map') return original(url, options);
+    requests++;
+    if (requests === 1) return Promise.resolve({ok: false, status: 503, json: async () => ({error: '조회 실패'})});
+    return new Promise(resolve => { settle = resolve; });
+  };
+  await ui.click('[data-open="ISSUE-001"]');
+  const first = await toggleTaskMap(ui);
+  assert.match(first.querySelector('[role=alert]').textContent, /조회 실패/);
+  await ui.click('.task-map button');
+  assert.match(first.textContent, /불러오는 중/);
+  await ui.click('[data-open="QA-001"]');
+  const second = await toggleTaskMap(ui);
+  settle({ok: true, json: async () => ({map: {
+    revision: 'a'.repeat(40), stale: false, nodes: [], edges: [], flows: [],
+  }})});
+  await tick();
+  assert.match(second.textContent, /등록된 코드 영향 범위와 화면 흐름이 없습니다/);
+  assert.doesNotMatch(first.textContent, /기준 커밋/);
+});
+
 test('initial view separates ongoing work from completed history', async (t) => {
   const ui = await setup(t);
   assert.equal(ui.rows().length, 5);

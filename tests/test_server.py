@@ -102,6 +102,22 @@ class HttpTests(unittest.TestCase):
         connection.close()
         return result
 
+    def test_task_map_api_is_read_only_and_returns_saved_version(self):
+        from agent_work.task_map import set_map
+
+        task = self.store.write({'title': '지도 API'})['task']['id']
+        url = f'/api/tasks/{task}/map'
+        status, body, _ = self.request('GET', url)
+        self.assertEqual((status, json.loads(body)), (200, {'map': None}))
+        matrix = {'version': 0, 'revision': 'a'*40, 'nodes': [], 'edges': [],
+                  'flows': [{'step': '빈 목록', 'condition': '', 'outcome': '안내 표시',
+                             'kind': 'spec', 'evidence': 'QA 인수 기준'}]}
+        saved = set_map(self.store, self.folder, task, matrix)
+        status, body, _ = self.request('GET', url)
+        self.assertEqual((status, json.loads(body)), (200, saved))
+        self.assertEqual(self.request('GET', '/api/tasks/UNKNOWN-99/map')[0], 404)
+        self.assertEqual(self.request('POST', url, matrix)[0], 404)
+
     def test_full_create_update_reload_export(self):
         status, body, _ = self.request("POST", "/api/tasks", {"title": "HTTP 저장", "category": "decision", "status": "waiting_decision"})
         self.assertEqual(status, 201)
