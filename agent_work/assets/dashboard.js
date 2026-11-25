@@ -199,6 +199,248 @@
     return `<section class="detail-section"><div class="detail-actions"><h3>작업 관계</h3><button class="button secondary" data-add-subtask ${task.queue === 'done' ? 'disabled title="상위 작업을 재개한 뒤 하위 작업을 추가하세요."' : ''}>하위 작업 만들기</button></div><ul class="relation-list">${items || '<li class="muted">연결된 작업이 없습니다.</li>'}</ul><div class="relation-form"><select id="relation-type" aria-label="작업 관계 유형">${options.map(type => `<option value="${type}">${relationLabels[type]}</option>`).join('')}</select><input id="relation-target" aria-label="관계 대상 작업 ID" placeholder="연결할 작업 ID"><button id="relation-add" class="button secondary">관계 연결</button></div><p id="relation-error" class="banner error" role="alert" hidden></p></section>`;
   }
 
+  function renderImpactGraph(items, edges, selected, highlighted) {
+    if (!items.length) return '<p class="muted">등록된 코드 항목이 없습니다.</p>';
+    const labels = new Map(items.map(item => [item.id, item.label]));
+    const levels = new Map();
+    if (selected) {
+      const incoming = new Set(edges.filter(edge => edge.to === selected).map(edge => edge.from));
+      for (const item of items) levels.set(item.id, item.id === selected ? 1 : incoming.has(item.id) ? 0 : 2);
+    } else {
+      const targets = new Set(edges.map(edge => edge.to));
+      const pending = items.filter(item => !targets.has(item.id)).map(item => item.id);
+      for (const id of pending) levels.set(id, 0);
+      const outgoing = new Map(items.map(item => [item.id, []]));
+      for (const edge of edges) outgoing.get(edge.from).push(edge.to);
+      const walk = (id) => {
+        for (const to of outgoing.get(id)) {
+          if (levels.has(to)) continue;
+          levels.set(to, Math.min(levels.get(id) + 1, 5));
+          pending.push(to);
+        }
+      };
+      for (let index = 0; index < pending.length; index++) walk(pending[index]);
+      // A component with only cycles has no root. Start it from its first saved node.
+      for (const item of items) {
+        if (levels.has(item.id)) continue;
+        const index = pending.length;
+        levels.set(item.id, 0);
+        pending.push(item.id);
+        for (let offset = index; offset < pending.length; offset++) walk(pending[offset]);
+      }
+    }
+
+    const cardW = 162, cardH = 48, xGap = 58, yGap = 34, margin = 20;
+    const columns = new Map(), points = new Map();
+    for (const item of items) {
+      const level = levels.get(item.id);
+      const row = columns.get(level) || 0;
+      points.set(item.id, {x: margin + level * (cardW + xGap), y: margin + row * (cardH + yGap)});
+      columns.set(level, row + 1);
+    }
+    const width = margin * 2 + Math.max(...levels.values()) * (cardW + xGap) + cardW + 20;
+    const height = margin * 2 + Math.max(...columns.values()) * (cardH + yGap) - yGap;
+    const connections = edges.map(edge => {
+      const a = points.get(edge.from), b = points.get(edge.to);
+      const y = a.y + cardH / 2, end = b.y + cardH / 2;
+      let line;
+      if (edge.from === edge.to) {
+        line = `M${a.x + cardW} ${y} C${a.x + cardW + 28} ${y - 27} ${a.x + cardW + 28} ${y + 27} ${a.x + cardW} ${y + 10}`;
+      } else if (a.x === b.x) {
+        const bend = a.x + cardW + 24;
+        line = `M${a.x + cardW} ${y} C${bend} ${y} ${bend} ${end} ${b.x + cardW} ${end}`;
+      } else {
+        const backwards = a.x > b.x;
+        const startX = a.x + (backwards ? 0 : cardW), endX = b.x + (backwards ? cardW : 0);
+        const bend = (startX + endX) / 2;
+        line = `M${startX} ${y} C${bend} ${y} ${bend} ${end} ${endX} ${end}`;
+      }
+      const label = `${labels.get(edge.from)} → ${labels.get(edge.to)} · ${edge.label}`;
+      return `<path class="map-edge" data-from="${escape(edge.from)}" data-to="${escape(edge.to)}" d="${line}" marker-end="url(#task-map-arrow)"><title>${escape(label)}</title></path>`;
+    }).join('');
+    const cards = items.map(item => {
+      const {x, y} = points.get(item.id);
+      const parts = [...item.label];
+      const limit = /[^\x00-\x7f]/.test(item.label) ? 12 : 20;
+      const label = parts.length > limit ? parts.slice(0, limit - 1).join('') + '…' : item.label;
+      return `<a href="#task-map-node" data-graph-node="${escape(item.id)}" class="map-node${item.id === selected ? ' selected' : highlighted.has(item.id) ? ' linked' : ''}" aria-label="${escape(item.label)} 기준으로 보기">
+        <title>${escape(item.label)} · ${escape(item.kind)}</title><rect x="${x}" y="${y}" width="${cardW}" height="${cardH}" rx="7"/>
+        <text x="${x + 9}" y="${y + 18}" class="map-node-type">${escape(item.kind.slice(0, 20))}</text>
+        <text x="${x + 9}" y="${y + 35}">${escape(label)}</text></a>`;
+    }).join('');
+    return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" aria-label="방향별 코드 관계">
+      <defs><marker id="task-map-arrow" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto">
+        <path d="M0 0 8 4 0 8z" class="map-arrowhead"/></marker></defs>${connections}${cards}</svg>`;
+  }
+
+  function renderTaskMap(content, map) {
+    const refs = (ref) => ref ? `<code class="monospace">${escape(ref.path)}${ref.line ? ':' + escape(ref.line) : ''}</code>` : '';
+    const node = (item) => `<strong>${escape(item.label)}</strong> <span class="muted">${escape(item.kind)}</span>${refs(item.ref)}`;
+    const nodes = new Map(map.nodes.map(item => [item.id, item]));
+    const related = new Set(map.edges.flatMap(edge => [edge.from, edge.to]));
+    const evidenceNames = {spec: '기획 기준', code: '코드 확인', browser: '브라우저 실측'};
+    const warning = map.stale === true ? '현재 작업본이 저장 기준과 다릅니다. 최신 근거를 다시 확인하세요.'
+      : map.stale === null ? '현재 체크아웃의 커밋을 확인할 수 없습니다.' : '';
+    content.innerHTML = `
+      <p class="muted task-map-revision">기준 커밋 <code class="monospace">${escape(map.revision)}</code></p>
+      ${warning ? `<p class="banner error" role="status">${warning}</p>` : ''}
+      <section class="task-map-section" aria-labelledby="task-map-impact">
+        <h3 id="task-map-impact">코드 영향 범위</h3>
+        ${map.nodes.length ? `<label for="task-map-node">기준 항목</label> <select id="task-map-node"><option value="">전체 항목</option>${map.nodes.map(item =>
+          `<option value="${escape(item.id)}">${escape(item.label)} · ${escape(item.kind)}</option>`).join('')}</select>` : ''}
+        <div class="task-map-focus" id="task-map-focus" aria-live="polite" hidden></div>
+        <div class="task-map-graph" id="task-map-graph" role="region" aria-label="코드 영향 그래프" tabindex="0"></div>
+        <details class="task-map-details"><summary>관계 표와 파일 근거</summary><div id="task-map-edges" aria-live="polite"></div></details>
+      </section>
+      <section class="task-map-section" aria-labelledby="task-map-flow">
+        <h3 id="task-map-flow">화면 흐름</h3>
+        ${map.flows.length ? `<p class="muted">각 행은 따로 기록된 화면 분기입니다.</p>
+          <ol class="task-map-flow">${map.flows.map((item, index) => {
+            const linked = item.node_ids?.length;
+            const tag = linked ? 'button' : 'div';
+            return `<li data-map-flow-row="${index}"><${tag} class="task-map-flow-lane"${linked ? ` type="button" data-map-flow="${index}" aria-pressed="false"` : ''}>
+              <span class="task-map-flow-node"><small>단계</small><strong>${escape(item.step)}</strong></span>
+              <span class="task-map-flow-arrow" aria-hidden="true">→</span>
+              <span class="task-map-flow-node"><small>조건</small>${escape(item.condition || '기록 없음')}</span>
+              <span class="task-map-flow-arrow" aria-hidden="true">→</span>
+              <span class="task-map-flow-node"><small>결과</small>${escape(item.outcome)}</span>
+            </${tag}>
+            <div class="task-map-flow-evidence"><span class="badge">${escape(evidenceNames[item.kind] ?? item.kind)}</span>
+            ${item.evidence ? `<span>${escape(item.evidence)}</span>` : ''}${refs(item.ref)}</div>
+            <p class="task-map-flow-links" hidden></p></li>`;
+          }).join('')}</ol>`
+          : '<p class="muted">등록된 화면 흐름이 없습니다.</p>'}
+      </section>`;
+    const select = content.querySelector('#task-map-node');
+    const edges = content.querySelector('#task-map-edges');
+    const graph = content.querySelector('#task-map-graph');
+    const focus = content.querySelector('#task-map-focus');
+    const lanes = Array.from(content.querySelectorAll('[data-map-flow-row]'));
+    let flowIndex = null;
+
+    const draw = () => {
+      const selected = select?.value;
+      const activeFlow = flowIndex === null ? null : map.flows[flowIndex];
+      const matches = new Set();
+      const highlighted = new Set(activeFlow?.node_ids ?? []);
+      if (selected) {
+        map.flows.forEach((flow, index) => {
+          if (!flow.node_ids?.includes(selected)) return;
+          matches.add(index);
+          for (const id of flow.node_ids) if (nodes.get(id).kind === 'test') highlighted.add(id);
+        });
+        for (const edge of map.edges) {
+          const neighbor = edge.from === selected ? edge.to : edge.to === selected ? edge.from : null;
+          if (nodes.get(neighbor)?.kind === 'test') highlighted.add(neighbor);
+        }
+      }
+      const direct = activeFlow
+        ? map.edges.filter(edge => highlighted.has(edge.from) && highlighted.has(edge.to))
+        : map.edges.filter(edge => !selected || edge.from === selected || edge.to === selected);
+      const shown = new Set(direct.flatMap(edge => [edge.from, edge.to]));
+      for (const id of highlighted) shown.add(id);
+      if (selected) shown.add(selected);
+      const scoped = selected || activeFlow;
+      const visible = scoped ? map.nodes.filter(item => shown.has(item.id)) : map.nodes;
+      const rows = selected ? map.edges.filter(edge => shown.has(edge.from) && shown.has(edge.to)
+        && (edge.from === selected || edge.to === selected || highlighted.has(edge.from) || highlighted.has(edge.to))) : direct;
+      graph.innerHTML = renderImpactGraph(visible, rows, selected, highlighted);
+      graph.scrollLeft = 0;
+      graph.scrollTop = 0;
+      if (select) select.options[0].textContent = activeFlow ? '선택한 분기 항목' : '전체 항목';
+
+      const tests = map.nodes.filter(item => highlighted.has(item.id) && item.kind === 'test');
+      focus.hidden = !scoped;
+      focus.innerHTML = scoped ? `
+        <div class="task-map-focus-heading"><strong>${escape(activeFlow?.step ?? nodes.get(selected).label)}</strong>
+          <button type="button" class="text-button" data-map-clear>선택 해제</button></div>
+        ${selected ? `<div class="task-map-match-list"><span>관련 화면 분기 ${matches.size}개</span>
+          ${Array.from(matches, index => `<button type="button" class="button secondary" data-map-flow="${index}">${escape(map.flows[index].step)}</button>`).join('')}</div>`
+          : `<p>연결된 코드 항목 ${highlighted.size}개</p>`}
+        <div><span>관련 테스트 ${tests.length}개</span>
+          ${tests.length ? `<ul>${tests.map(item => `<li>${node(item)}</li>`).join('')}</ul>` : ''}</div>` : '';
+
+      lanes.forEach((lane, index) => {
+        const active = index === flowIndex;
+        lane.classList.toggle('linked', matches.has(index) || active);
+        lane.querySelector('button')?.setAttribute('aria-pressed', String(active));
+        const links = lane.querySelector('.task-map-flow-links');
+        links.hidden = !active;
+        links.textContent = active
+          ? '연결된 코드 · ' + [...highlighted].map(id => nodes.get(id).label).join(' · ') : '';
+      });
+
+      const isolated = visible.filter(item => !related.has(item.id));
+      edges.innerHTML = (rows.length ? `
+        <table class="task-map-table">
+          <thead><tr><th scope="col">출발</th><th scope="col">관계 →</th><th scope="col">대상</th></tr></thead>
+          <tbody>${rows.map(edge => `<tr><td>${node(nodes.get(edge.from))}</td><td>${escape(edge.label)}</td><td>${node(nodes.get(edge.to))}</td></tr>`).join('')}</tbody>
+        </table>` : `<p class="muted">${map.nodes.length ? '연결된 코드 관계가 없습니다.' : '등록된 코드 영향 범위가 없습니다.'}</p>`) +
+        (isolated.length ? `<ul class="task-map-flow">${isolated.map(item => `<li>${node(item)}</li>`).join('')}</ul>` : '');
+    };
+
+    select?.addEventListener('change', () => { flowIndex = null; draw(); });
+    content.addEventListener('click', event => {
+      const button = event.target.closest('[data-map-flow]');
+      if (button && select) {
+        const index = Number(button.dataset.mapFlow);
+        flowIndex = flowIndex === index ? null : index;
+        select.value = '';
+        draw();
+        if (!button.isConnected) select.focus({preventScroll: true});
+      } else if (event.target.closest('[data-map-clear]') && select) {
+        select.value = '';
+        flowIndex = null;
+        draw();
+        select.focus({preventScroll: true});
+      }
+    });
+    graph.addEventListener('click', event => {
+      const link = event.target.closest('[data-graph-node]');
+      if (!link || !select) return;
+      event.preventDefault();
+      select.value = link.dataset.graphNode;
+      flowIndex = null;
+      draw();
+      select.focus({preventScroll: true});
+    });
+    draw();
+  }
+
+  function mountTaskMap(id, sequence) {
+    $('detail-content').querySelector('.detail-page-path').insertAdjacentHTML('afterend', `
+      <details class="detail-section task-map">
+        <summary>코드 영향 범위 · 화면 흐름</summary>
+        <div class="task-map-content"></div>
+      </details>`);
+    const details = $('detail-content').querySelector('.task-map');
+    const content = details.querySelector('.task-map-content');
+    let loading = false;
+    let loaded = false;
+    async function load() {
+      if (loading || loaded || sequence !== state.detailSequence) return;
+      loading = true;
+      content.innerHTML = '<p class="muted" role="status">코드 영향 범위와 화면 흐름을 불러오는 중…</p>';
+      try {
+        const {map} = await request(`/api/tasks/${encodeURIComponent(id)}/map`);
+        if (sequence !== state.detailSequence) return;
+        if (map) renderTaskMap(content, map);
+        else content.innerHTML = '<p class="muted">등록된 코드 영향 범위와 화면 흐름이 없습니다.</p>';
+        loaded = true;
+      } catch (error) {
+        if (sequence !== state.detailSequence) return;
+        content.innerHTML = `<p class="banner error" role="alert">불러오기 실패 · ${escape(error.message)}</p>
+          <button type="button" class="button secondary">다시 불러오기</button>`;
+        content.querySelector('button').addEventListener('click', load);
+      } finally {
+        loading = false;
+      }
+    }
+    details.addEventListener('toggle', () => {
+      if (details.open) load();
+    });
+  }
+
   async function saveRelation(task, type, target, remove) {
     const panel = $('detail-content');
     const buttons = [...panel.querySelectorAll('#relation-add,[data-unlink]')];
@@ -242,6 +484,7 @@
         .join('');
       $('detail-content').innerHTML =
         `<div class="detail-badges"><span class="priority ${escape(task.priority)}">${escape(task.priority)}</span>${badge(task.queue, queues)}${task.is_api_request ? '<span class="badge api">API 요청</span>' : ''}</div><h2 id="detail-title">${escape(task.title)}</h2><p class="detail-summary">${escape(task.summary)}</p><section class="detail-page-path"><h3>페이지 경로</h3><code>${escape(task.page_path || '미기록')}</code></section><div class="detail-actions">${task.queue === 'qa' ? `<button class="button primary" data-complete-qa="${escape(id)}">QA 완료 처리</button>` : ''}<button class="button ${task.queue === 'qa' ? 'secondary' : 'primary'}" data-edit="${escape(id)}">내용·상태 수정</button>${task.queue === 'issue' || task.category === 'issue' ? '<button class="button secondary" data-copy-task>에이전트용 복사</button>' : ''}<button class="button secondary" data-archive="${escape(id)}">${task.queue === 'archived' ? '보관 해제' : '보관'}</button></div><div class="detail-facts"><div><span>영역</span><strong>${escape(task.areas.join(' · ') || '공통')}</strong></div><div><span>담당 구분</span><strong>${escape(task.owner || '미지정')}</strong></div><div><span>최근 확인</span><strong>${escape(task.last_checked || '미확인')}</strong></div><div><span>확인 근거</span><strong>${escape(task.verification || '미기록')}</strong></div></div>${relationshipSection(task, relationships)}${section('상세 / 현재 제약', task.detail)}${section('다음 할 일', task.next_action)}${section('완료·확인 기준', task.acceptance)}${task.category === 'qa' ? section(`QA 판정 · ${qaResults[task.qa_result]}`, '준비 조건\n' + (task.qa.preconditions || '미기록')) + section('테스트 절차', task.qa.steps) + section('기대 결과', task.qa.expected) + section('실제 결과', task.qa.actual || '아직 실행 결과가 기록되지 않았습니다.') + section('증거', task.qa.evidence) : ''}${section('처리·결정 내용', task.resolution)}${sources ? `<section class="detail-section"><h3>근거 문서·티켓</h3><div class="source-list">${sources}</div></section>` : ''}<section class="detail-section"><h3>변경 이력 <span class="muted">버전 ${task.version}</span></h3><ol class="history">${history.map((item) => `<li>${escape(date(item.created_at))} · ${item.action === 'created' ? '등록' : '수정'}<p>${escape(item.note || '기록 업데이트')}</p></li>`).join('')}</ol></section>`;
+      mountTaskMap(id, sequence);
       $('detail-content')
         .querySelectorAll('[data-source-index]')
         .forEach((button) =>
@@ -759,5 +1002,8 @@
     }
   });
   render();
-  refresh(false);
+  refresh(false).then(() => {
+    const ticket = new URLSearchParams(location.search).get('ticket');
+    if (ticket && state.tasks.some(task => task.id === ticket)) openDetail(ticket);
+  });
 })();

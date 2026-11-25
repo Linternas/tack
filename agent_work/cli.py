@@ -108,6 +108,9 @@ def parser():
     record_list=record.add_parser('list');record_list.add_argument('task_id');record_list.add_argument('--kind',choices=sorted(KINDS));record_list.add_argument('--section')
     record_list.add_argument('--limit',type=positive,default=5);record_list.add_argument('--offset',type=offset,default=0)
     record_show=record.add_parser('show');record_show.add_argument('id');record_show.add_argument('--full',action='store_true')
+    task_map = sub.add_parser('map', help='티켓의 코드 영향 범위와 화면 흐름').add_subparsers(dest='map_action', required=True)
+    task_map.add_parser('show').add_argument('task_id')
+    map_set = task_map.add_parser('set');map_set.add_argument('task_id');map_set.add_argument('--json',dest='input',required=True)
     task=sub.add_parser('task').add_subparsers(dest='action',required=True)
     add=task.add_parser('add'); add.add_argument('title'); add.add_argument('--category',default='task',help=argparse.SUPPRESS); add.add_argument('--page',type=str.strip,help='UI 페이지 경로 또는 http(s) 주소'); add.add_argument('--api-request',action='store_true',help='API 요청 표식'); add.add_argument('--parent',help='상위 작업 ID'); add.add_argument('--queue',choices=sorted(QUEUES),help='업무 목록'); add.add_argument('--json',dest='input')
     show=task.add_parser('show'); show.add_argument('id');show.add_argument('--full',action='store_true');show.add_argument('--section')
@@ -189,6 +192,7 @@ def run(args):
         from .migration import migrate
         return emit(migrate(project,args.board,args.notes,args.active_note))
     readonly=(args.command=='settings' and args.settings_action in {'show','catalog'}) or args.command in {'status','resume','sessions','doctor','usage','search'} or (args.command=='record' and args.record_action!='add') or (args.command=='goal' and args.goal_action in {'list','show','messages'}) or (args.command=='team' and args.team_action in {'list','show','collaboration'}) or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action in {'show','relations'})
+    if args.command == 'map' and args.map_action == 'show':readonly=True
     from .project_lifecycle import read
     if not readonly and args.command!='dashboard' and read(project['db_path'])['status']=='archived':raise BoardError('보관 프로젝트는 읽기 전용입니다. project restore로 복원해주세요.',409)
     store=Store(project['db_path'],readonly=readonly)
@@ -204,6 +208,11 @@ def run(args):
         from .orchestration_cli import dispatch
         return emit(dispatch(args,project,store,payload))
     if args.command=='init': return emit(project)
+    if args.command == 'map':
+        from .task_map import get_map, set_map
+        if args.map_action == 'show':
+            return emit(get_map(store, project['workspace'], args.task_id))
+        return emit(set_map(store, project['workspace'], args.task_id, payload(args.input)))
     if args.command=='document':
         if args.document_action=='list': return emit({'documents':store.documents()})
         if args.document_action=='import': return emit(store.archive_document(args.path,args.kind))

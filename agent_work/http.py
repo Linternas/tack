@@ -67,6 +67,11 @@ class Handler(BaseHTTPRequestHandler):
                 project=self.server.project if lifecycle_route[1]==self.server.project['id'] else by_id(lifecycle_route[1])
             if not lifecycle_route and path not in {'/api/projects','/projects'} and query.get('project',[project['id']])[0] != project['id']:
                 project=by_id(query['project'][0])
+            map_route = re.fullmatch(r'/api/tasks/([A-Z0-9-]+)/map', path)
+            if map_route and not write:
+                from .task_map import get_map
+                store = Store(project.get('db_path', self.server.store.path), readonly=True)
+                return self.respond(get_map(store, project['workspace'], map_route[1]))
             store=self.server.store if project['id']==self.server.project['id'] else Store(project['db_path'])
             project={**project,**project_state(project.get('db_path',self.server.store.path))}
             note_route=re.fullmatch(r'/api/notes/(NOTE-[A-F0-9]{32})',path)
