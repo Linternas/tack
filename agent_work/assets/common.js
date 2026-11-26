@@ -19,9 +19,19 @@
   if(legacyPicker && !pickerInSidebar){pickerInSidebar=document.createElement('label');pickerInSidebar.textContent='프로젝트';pickerInSidebar.append(legacyPicker);}
   if(pickerInSidebar){pickerInSidebar.classList.add('shell-project-picker');document.querySelector('main')?.prepend(pickerInSidebar);}
   sidebar.className='sidebar app-navigation';sidebar.setAttribute('aria-label','앱 메뉴');
-  const menu=[['/','작업 보드'],['/notes','노트'],['/sessions','작업 재개·세션'],['/qa','QA 워크플로우'],['/projects','전체 프로젝트'],['/documents','보관 문서'],['/usage','실행 이력']];
+  const menu = [
+    ['문서', [['/', '티켓'], ['/notes', '노트'], ['/documents', '보관 문서']]],
+    ['기록', [['/sessions', '작업 재개·세션'], ['/usage', '실행 이력']]],
+    ['관리', [['/qa', 'QA 워크플로우'], ['/projects', '전체 프로젝트']]],
+  ];
   const current=location.pathname.startsWith('/documents/')?'/documents':location.pathname;
-  sidebar.innerHTML='<a class="brand" href="/" aria-label="Tack 홈" title="Tack"><span class="brand-symbol">T</span></a><nav aria-label="주 메뉴">'+menu.map(([href,label])=>`<a class="nav-item${current===href?' active':''}" href="${href}" title="${label}" aria-label="${label}"${current===href?' aria-current="page"':''}><span class="nav-icon" aria-hidden="true"></span><span class="nav-label">${label}</span></a>`).join('')+'</nav>';
+  const navigation = menu.map(([group, items]) => {
+    const links = items.map(([href, label]) =>
+      `<a class="nav-item${current === href ? ' active' : ''}" href="${href}" title="${label}" aria-label="${label}"${current === href ? ' aria-current="page"' : ''}><span class="nav-icon" aria-hidden="true"></span><span class="nav-label">${label}</span></a>`
+    ).join('');
+    return `<nav class="nav-group" aria-label="${group}">${links}</nav>`;
+  }).join('');
+  sidebar.innerHTML = '<a class="brand" href="/" aria-label="Tack 홈" title="Tack"><span class="brand-symbol">T</span></a>' + navigation;
   // Older pages had their own navigation row in place of the shared sidebar.
   const oldNav=document.querySelector('main.session-layout > nav');
   if(oldNav){for(const link of oldNav.querySelectorAll('a'))link.remove();if(!oldNav.children.length)oldNav.remove();}
@@ -39,7 +49,7 @@
     usage:'<path d="M4 3v17a1 1 0 0 0 1 1h16M9 16v-5m5 5V6m5 10V9"/>'
   };
   window.tackIcon=name=>iconPaths[name]?`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${iconPaths[name]}</svg>`:'';
-  const navIcons={'/':'grid','/sessions':'sessions','/projects':'projects','/documents':'documents','/notes':'documents','/usage':'usage','/qa':'qa'};
+  const navIcons={'/':'grid','/sessions':'sessions','/projects':'projects','/documents':'archived','/notes':'documents','/usage':'usage','/qa':'qa'};
   for(const link of document.querySelectorAll('.sidebar .nav-item')){
     const icon=navIcons[new URL(link.getAttribute('href'),location.origin).pathname];
     if(!icon)continue;
@@ -69,6 +79,7 @@
       const url = new URL(location.href);
       url.searchParams.set('project', picker.value);
       url.searchParams.delete('workspace');
+      url.searchParams.delete('ticket');
       location.assign(url);
     });
   }).catch((error) => {

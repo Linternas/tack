@@ -3,20 +3,29 @@ const asset=n=>fs.readFileSync(path.join(__dirname,'../agent_work/assets',n),'ut
 function setup(t,html){const dom=new JSDOM(html,{url:'http://127.0.0.1/?project=fixture',runScripts:'outside-only'});t.after(()=>dom.window.close());dom.window.fetch=async()=>({ok:true,json:async()=>({project:{id:'fixture',name:'Fixture'},projects:[]})});return dom.window;}
 
 const files=['index.html','notes.html','qa.html','usage.html','sessions.html','projects.html'];
-const routes=['/','/notes','/sessions','/qa','/projects','/documents','/usage'];
-test('every Core page keeps the same ordered SVG navigation',async t=>{
+const groups = [
+  ['문서', ['/', '/notes', '/documents']],
+  ['기록', ['/sessions', '/usage']],
+  ['관리', ['/qa', '/projects']],
+];
+test('every Core page places document routes before records and management',async t=>{
  for(const file of files){
   const w=setup(t,asset(file));w.eval(asset('common.js'));await tick();
+  const navigation = [...w.document.querySelectorAll('.sidebar nav.nav-group')];
+  assert.deepEqual(navigation.map(nav => [
+    nav.getAttribute('aria-label'),
+    [...nav.querySelectorAll('a')].map(a => new URL(a.href).pathname),
+  ]), groups, file);
   const links=[...w.document.querySelectorAll('.sidebar .nav-item')];
-  assert.deepEqual(links.map(a=>new URL(a.href).pathname),routes,file);
   for(const link of links){const svg=link.querySelector('.nav-icon svg');assert.ok(svg,file);assert.equal(svg.getAttribute('viewBox'),'0 0 24 24');assert.equal(svg.getAttribute('stroke-width'),'1.8');assert.equal(svg.getAttribute('stroke'),'currentColor');assert.ok(link.getAttribute('aria-label'));assert.equal(new URL(link.href).searchParams.get('project'),'fixture');}
-  assert.equal(links.at(-1).getAttribute('aria-label'),'실행 이력');
+  assert.deepEqual([...navigation[0].querySelectorAll('a')].map(a => a.getAttribute('aria-label')), ['티켓', '노트', '보관 문서']);
+  assert.equal(new Set([...navigation[0].querySelectorAll('svg')].map(svg => svg.innerHTML)).size, 3, file);
   assert.equal(w.document.querySelectorAll('#project-picker').length,asset(file).includes('id="project-picker"')?1:0);
  }
 });
 test('board classifications stay inside the board and the project picker survives',async t=>{
  const w=setup(t,asset('index.html'));const picker=w.document.getElementById('project-picker');w.eval(asset('common.js'));await tick();
- assert.equal(w.document.getElementById('navigation'),null);assert.equal(w.document.querySelector('.board #category-filter'),null);assert.ok(w.document.querySelector('.board #record-view'));assert.equal(w.document.getElementById('project-picker'),picker);assert.ok(w.document.querySelector('main #project-picker'));
+ assert.equal(w.document.getElementById('navigation'),null);assert.equal(w.document.querySelector('#ticket-list #category-filter'),null);assert.ok(w.document.querySelector('#ticket-list #record-view'));assert.equal(w.document.getElementById('project-picker'),picker);assert.ok(w.document.querySelector('main #project-picker'));
 });
 test('board has no team navigation or execution activation controls', async t => {
   const w = setup(t, asset('index.html'));
@@ -40,6 +49,39 @@ test('execution history is the active navigation item and stays scoped to the se
   const anotherProject = new URL(w.workUrl('/documents?project=other'), w.location.origin);
   assert.equal(anotherProject.searchParams.get('project'), 'other');
   assert.equal(anotherProject.searchParams.has('workspace'), false);
+});
+
+test('an archived document keeps its document navigation item active', async t => {
+  const w = setup(t, '<main class="session-layout"><nav><a href="/documents">문서</a></nav></main>');
+  w.history.replaceState(null, '', '/documents/DOC-1?project=fixture');
+  w.eval(asset('common.js'));
+  await tick();
+
+  const active = w.document.querySelector('.sidebar [aria-current="page"]');
+  assert.equal(new URL(active.href).pathname, '/documents');
+  assert.equal(active.closest('nav').getAttribute('aria-label'), '문서');
+  assert.equal(w.document.querySelector('main nav'), null);
+});
+
+test('switching projects clears the previous checkout and selected ticket', async t => {
+  const w = setup(t, asset('index.html'));
+  const location = new URL('http://127.0.0.1/?project=fixture&workspace=%2Fproject%2Fa&ticket=LOCAL-0123&view=notes');
+  let destination;
+  location.assign = url => { destination = url; };
+  const fetch = async () => ({ok:true, json:async () => ({
+    project: {id:'fixture', name:'Fixture'},
+    projects: [{id:'fixture', name:'Fixture'}, {id:'other', name:'Other'}],
+  })});
+  require('node:vm').runInNewContext(asset('common.js'), {
+    window: w, document: w.document, location, fetch, URL, URLSearchParams,
+  });
+  await tick();
+
+  const picker = w.document.getElementById('project-picker');
+  picker.value = 'other';
+  picker.dispatchEvent(new w.Event('change'));
+  assert.ok(destination);
+  assert.deepEqual([...destination.searchParams], [['project', 'other'], ['view', 'notes']]);
 });
 
 test('project notes can be created, found by body, and opened for editing', async t => {
