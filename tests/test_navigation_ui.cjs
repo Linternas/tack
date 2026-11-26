@@ -3,6 +3,59 @@ const asset=n=>fs.readFileSync(path.join(__dirname,'../agent_work/assets',n),'ut
 function setup(t,html){const dom=new JSDOM(html,{url:'http://127.0.0.1/?project=fixture',runScripts:'outside-only'});t.after(()=>dom.window.close());dom.window.fetch=async()=>({ok:true,json:async()=>({project:{id:'fixture',name:'Fixture'},projects:[]})});return dom.window;}
 
 const files=['index.html','notes.html','qa.html','usage.html','sessions.html','projects.html'];
+test('all static pages load the theme before the shared stylesheet', () => {
+  for (const file of files) {
+    const html = asset(file);
+    assert.ok(html.includes('<script src="/theme.js"></script>'), file);
+    assert.ok(html.indexOf('/theme.js') < html.indexOf('/dashboard.css'), file);
+  }
+});
+
+test('theme settings apply immediately and the saved choice is loaded on another page', async t => {
+  const w = setup(t, asset('index.html'));
+  w.eval(asset('theme.js'));
+  w.eval(asset('common.js'));
+  await tick();
+
+  const d = w.document;
+  const trigger = d.getElementById('open-theme-settings');
+  const dialog = d.getElementById('theme-settings');
+  const paper = dialog.querySelector('[value="paper"]');
+  const classic = dialog.querySelector('[value="classic"]');
+  dialog.showModal = () => dialog.setAttribute('open', '');
+  trigger.click();
+  assert.equal(d.documentElement.dataset.theme, 'paper');
+  assert.equal(paper.checked, true);
+  assert.equal(d.activeElement, paper);
+  classic.click();
+  assert.equal(d.documentElement.dataset.theme, 'classic');
+  assert.equal(w.localStorage.getItem('tack-theme'), 'classic');
+  dialog.removeAttribute('open');
+  dialog.dispatchEvent(new w.Event('close'));
+  assert.equal(d.activeElement, trigger);
+
+  const next = setup(t, asset('notes.html'));
+  next.localStorage.setItem('tack-theme', w.localStorage.getItem('tack-theme'));
+  next.eval(asset('theme.js'));
+  assert.equal(next.document.documentElement.dataset.theme, 'classic');
+});
+
+test('unknown preferences and denied storage fall back safely', t => {
+  const w = setup(t, asset('index.html'));
+  w.localStorage.setItem('tack-theme', 'unknown');
+  w.eval(asset('theme.js'));
+  assert.equal(w.document.documentElement.dataset.theme, 'paper');
+  w.tackTheme.set('unknown');
+  assert.equal(w.document.documentElement.dataset.theme, 'paper');
+  assert.equal(w.localStorage.getItem('tack-theme'), 'unknown');
+
+  Object.defineProperty(w, 'localStorage', {get() { throw new Error('disabled'); }});
+  w.eval(asset('theme.js'));
+  assert.equal(w.document.documentElement.dataset.theme, 'paper');
+  w.tackTheme.set('classic');
+  assert.equal(w.document.documentElement.dataset.theme, 'classic');
+});
+
 const groups = [
   ['문서', ['/', '/notes', '/documents']],
   ['기록', ['/sessions', '/usage']],

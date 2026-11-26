@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tack · 티켓</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any">
+  <script src="/theme.js"></script>
   <link rel="stylesheet" href="/dashboard.css">
   <script src="/common.js" defer></script>
   <script src="/dashboard.js" defer></script>
@@ -34,7 +35,7 @@
           <select id="priority-filter" aria-label="우선순위 필터"><option value="">모든 우선순위</option><option>P1</option><option>P2</option><option>P3</option></select>
           <label class="api-request-filter"><input id="api-only" type="checkbox">API 요청만</label>
         </div>
-        <div class="table-scroll"><table><thead class="ticket-list-columns"><tr><th scope="col">티켓</th><th scope="col">작업</th></tr></thead><tbody id="task-rows"><tr><td colspan="2" class="empty">기록을 불러오는 중입니다.</td></tr></tbody></table></div>
+        <div class="table-scroll"><table><thead class="ticket-list-columns"><tr><th scope="col">티켓</th></tr></thead><tbody id="task-rows"><tr><td class="empty">기록을 불러오는 중입니다.</td></tr></tbody></table></div>
         <footer class="board-footer"><span id="saved-at">SQLite · 연결 중</span></footer>
       </section>
       <section id="detail-panel" class="detail-panel" aria-label="티켓 본문">

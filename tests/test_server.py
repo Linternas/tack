@@ -367,13 +367,15 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(len(reopened["history"]), 5)
 
     def test_assets_and_read_only_source_boundary(self):
-        for path, mime in (("/", "text/html"), ("/dashboard.js", "application/javascript"), ("/dashboard.css", "text/css"), ("/qa", "text/html"), ("/qa/", "text/html"), ("/qa.js", "application/javascript"), ("/qa.css", "text/css"), ("/favicon.svg", "image/svg+xml")):
+        for path, mime in (("/", "text/html"), ("/dashboard.js", "application/javascript"), ("/dashboard.css", "text/css"), ("/qa", "text/html"), ("/qa/", "text/html"), ("/qa.js", "application/javascript"), ("/qa.css", "text/css"), ("/favicon.svg", "image/svg+xml"), ("/theme.js", "application/javascript")):
             status, body, headers = self.request("GET", path)
             self.assertEqual(status, 200)
             self.assertIn(mime, headers["Content-Type"])
             self.assertGreater(len(body), 100)
             if mime == "text/html":
                 self.assertIn(b'<link rel="icon" href="/favicon.svg"', body)
+                self.assertLess(body.index(b'<script src="/theme.js"></script>'),
+                                body.index(b'<link rel="stylesheet" href="/dashboard.css">'))
             if mime == "image/svg+xml":
                 self.assertTrue(body.startswith(b'<svg'))
         self.assertEqual(self.request("GET", "/api/source?path=docs/test.md")[0], 200)

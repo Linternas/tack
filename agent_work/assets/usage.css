@@ -12,3 +12,5 @@
 .execution-fields dt{color:var(--muted);font-weight:600}
 .execution-fields dd{margin:0;white-space:pre-wrap}
 .execution-fields pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}
+:root[data-theme="paper"] #execution-rows .text-button { font-size: 14px; font-weight: 600; }
+:root[data-theme="paper"] .execution-fields { font-size: 14px; line-height: 1.7; }

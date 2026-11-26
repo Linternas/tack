@@ -64,7 +64,11 @@ class DocumentTests(unittest.TestCase):
                              {'path':md_key,'text':doc['text'],'format':'markdown'})
             status,body,_=get('/documents/'+doc['id']);self.assertEqual(status,200);self.assertIn(b'&lt;b&gt;',body)
             self.assertEqual(len(json.loads(get('/api/documents')[1])['documents']),2)
-            self.assertEqual(get('/documents')[0],200)
+            index_status,index_body,_=get('/documents')
+            self.assertEqual(index_status,200)
+            for page in (body,index_body,get('/source?path='+md_key)[1]):
+                self.assertLess(page.index(b'<script src="/theme.js"></script>'),
+                                page.index(b'<link rel="stylesheet" href="/dashboard.css">'))
             self.assertEqual(get('/api/source?path=../../etc/passwd')[0],404)
             html_key='docs/design.HTM'
             self.assertEqual(json.loads(get('/api/source?path='+html_key)[1]),

@@ -15,6 +15,10 @@
     queue: '',
     selectedId: null,
     detailSequence: 0,
+    detailVersion: null,
+    detailRelationships: null,
+    refreshTaskMap: null,
+    taskWriteSequence: 0,
     editing: null,
     completing: null,
     completionInitial: '',
@@ -157,13 +161,13 @@
                   ${task.parent_id ? `<button class="source-link" data-open="${escape(task.parent_id)}">상위 ${escape(task.parent_id)}</button>` : ''}
                   ${(task.relations || []).filter(link => link.type !== 'relates_to').map(link => `<button class="source-link" data-open="${escape(link.task_id)}">${escape(relationLabels[link.type])} ${escape(link.task_id)}</button>`).join('')}
                   ${missingDependencies(task).length ? `<span class="dependency-tag">· 선행 ${missingDependencies(task).length}건</span>` : ''}
+                  ${task.queue === 'qa' ? `<button class="button secondary task-row-qa" data-complete-qa="${escape(task.id)}" aria-label="${escape(task.id)} QA 완료 처리">QA 완료 처리</button>` : ''}
                 </div>
               </td>
-              <td class="task-row-action">${task.queue === 'qa' ? `<button class="button secondary" data-complete-qa="${escape(task.id)}" aria-label="${escape(task.id)} QA 완료 처리">QA 완료 처리</button>` : ''}</td>
             </tr>`
           )
           .join('')
-      : `<tr><td colspan="2" class="empty">${state.loaded ? '조건에 맞는 항목이 없습니다.' : '기록을 불러오는 중입니다.'}</td></tr>`;
+      : `<tr><td class="empty">${state.loaded ? '조건에 맞는 항목이 없습니다.' : '기록을 불러오는 중입니다.'}</td></tr>`;
     markSelectedTicket();
   }
 
@@ -174,6 +178,18 @@
       if (selected) title.setAttribute('aria-current', 'true');
       else title.removeAttribute('aria-current');
     }
+  }
+
+  function selectedTicketTitle() {
+    return $('task-rows').querySelector('.task-title[aria-current="true"]');
+  }
+
+  function titleInView(title) {
+    const bounds = title.getBoundingClientRect();
+    const list = $('ticket-list').getBoundingClientRect();
+    const scroller = $('ticket-list').querySelector('.table-scroll').getBoundingClientRect();
+    return bounds.top >= Math.max(0, list.top, scroller.top) &&
+      bounds.bottom <= Math.min(window.innerHeight, list.bottom, scroller.bottom);
   }
 
   function searchChanged() {
@@ -192,14 +208,23 @@
   async function refresh(notify = true) {
     $('refresh').disabled = true;
     try {
-      const data = await request('/api/tasks');
+      let data;
+      let writeSequence;
+      do {
+        writeSequence = state.taskWriteSequence;
+        data = await request('/api/tasks');
+      } while (writeSequence !== state.taskWriteSequence);
       state.tasks = data.tasks;
       state.loaded = true;
       $('connection-error').hidden = true;
       $('saved-at').textContent = `SQLite · ${date(data.saved_at)} 불러옴`;
       searchChanged();
       if (notify) {
-        if (state.selectedId) await openDetail(state.selectedId, {focus: false});
+        if (state.selectedId) {
+          const refreshTaskMap = state.refreshTaskMap;
+          await openDetail(state.selectedId, {focus: false});
+          if (state.refreshTaskMap === refreshTaskMap) refreshTaskMap?.();
+        }
         toast('최신 기록을 불러왔습니다.');
       }
     } catch (error) {
@@ -216,10 +241,14 @@
     content
       ? `<section class="detail-section"><h3>${escape(title)}</h3><p class="prose">${escape(content)}</p></section>`
       : '';
+  function relationshipItems(relationships) {
+    return relationships.items.map(item => `<li class="relation-row"><span>${escape(relationLabels[item.type])}</span><button class="source-link" data-open="${escape(item.id)}">${escape(item.id)} · ${escape(item.title)}</button>${badge(item.queue,queues)}${item.outgoing ? `<button class="icon-button" data-unlink="${escape(item.type)}" data-target="${escape(item.id)}" aria-label="${escape(item.id)} ${escape(relationLabels[item.type])} 관계 해제">×</button>` : ''}</li>`).join('') ||
+      '<li class="muted">연결된 작업이 없습니다.</li>';
+  }
+
   function relationshipSection(task, relationships) {
     const options = ['parent','blocked_by','duplicate_of','superseded_by','relates_to'];
-    const items = relationships.items.map(item => `<li class="relation-row"><span>${escape(relationLabels[item.type])}</span><button class="source-link" data-open="${escape(item.id)}">${escape(item.id)} · ${escape(item.title)}</button>${badge(item.queue,queues)}${item.outgoing ? `<button class="icon-button" data-unlink="${escape(item.type)}" data-target="${escape(item.id)}" aria-label="${escape(item.id)} ${escape(relationLabels[item.type])} 관계 해제">×</button>` : ''}</li>`).join('');
-    return `<section class="detail-section"><div class="detail-actions"><h3>작업 관계</h3><button class="button secondary" data-add-subtask ${task.queue === 'done' ? 'disabled title="상위 작업을 재개한 뒤 하위 작업을 추가하세요."' : ''}>하위 작업 만들기</button></div><ul class="relation-list">${items || '<li class="muted">연결된 작업이 없습니다.</li>'}</ul><div class="relation-form"><select id="relation-type" aria-label="작업 관계 유형">${options.map(type => `<option value="${type}">${relationLabels[type]}</option>`).join('')}</select><input id="relation-target" aria-label="관계 대상 작업 ID" placeholder="연결할 작업 ID"><button id="relation-add" class="button secondary">관계 연결</button></div><p id="relation-error" class="banner error" role="alert" hidden></p></section>`;
+    return `<section class="detail-section"><div class="detail-actions"><h3>작업 관계</h3><button class="button secondary" data-add-subtask ${task.queue === 'done' ? 'disabled title="상위 작업을 재개한 뒤 하위 작업을 추가하세요."' : ''}>하위 작업 만들기</button></div><ul class="relation-list">${relationshipItems(relationships)}</ul><div class="relation-form"><select id="relation-type" aria-label="작업 관계 유형">${options.map(type => `<option value="${type}">${relationLabels[type]}</option>`).join('')}</select><input id="relation-target" aria-label="관계 대상 작업 ID" placeholder="연결할 작업 ID"><button id="relation-add" class="button secondary">관계 연결</button></div><p id="relation-error" class="banner error" role="alert" hidden></p></section>`;
   }
 
   function renderImpactGraph(items, edges, selected, highlighted) {
@@ -403,7 +432,7 @@
     };
 
     select?.addEventListener('change', () => { flowIndex = null; draw(); });
-    content.addEventListener('click', event => {
+    content.onclick = event => {
       const button = event.target.closest('[data-map-flow]');
       if (button && select) {
         const index = Number(button.dataset.mapFlow);
@@ -417,7 +446,7 @@
         draw();
         select.focus({preventScroll: true});
       }
-    });
+    };
     graph.addEventListener('click', event => {
       const link = event.target.closest('[data-graph-node]');
       if (!link || !select) return;
@@ -430,33 +459,52 @@
     draw();
   }
 
-  function mountTaskMap(id, sequence) {
+  function mountTaskMap(id) {
     const details = $('detail-content').querySelector('.task-map');
     const content = details.querySelector('.task-map-content');
-    let loading = false;
-    let loaded = false;
+    const isCurrent = () => details.isConnected && details.open && state.selectedId === id;
+    let pending;
+    let valid = false;
+    let renderedSignature;
     async function load() {
-      if (loading || loaded || sequence !== state.detailSequence) return;
-      loading = true;
-      content.innerHTML = '<p class="muted" role="status">코드 영향 범위와 화면 흐름을 불러오는 중…</p>';
+      if (pending || valid || !isCurrent()) return;
+      const loadToken = pending = {};
+      if (renderedSignature === undefined) {
+        content.innerHTML = '<p class="muted" role="status">코드 영향 범위와 화면 흐름을 불러오는 중…</p>';
+      }
       try {
         const {map} = await request(`/api/tasks/${encodeURIComponent(id)}/map`);
-        if (sequence !== state.detailSequence) return;
-        if (map) renderTaskMap(content, map);
-        else content.innerHTML = '<p class="muted">등록된 코드 영향 범위와 화면 흐름이 없습니다.</p>';
-        loaded = true;
+        if (pending !== loadToken || !isCurrent()) return;
+        content.querySelector('[data-map-load-error]')?.remove();
+        const signature = JSON.stringify(map ?? null);
+        if (signature !== renderedSignature) {
+          content.onclick = null;
+          if (map) renderTaskMap(content, map);
+          else content.innerHTML = '<p class="muted">등록된 코드 영향 범위와 화면 흐름이 없습니다.</p>';
+          renderedSignature = signature;
+        }
+        valid = true;
       } catch (error) {
-        if (sequence !== state.detailSequence) return;
-        content.innerHTML = `<p class="banner error" role="alert">불러오기 실패 · ${escape(error.message)}</p>
-          <button type="button" class="button secondary">다시 불러오기</button>`;
-        content.querySelector('button').addEventListener('click', load);
+        if (pending !== loadToken || !isCurrent()) return;
+        if (renderedSignature === undefined) content.replaceChildren();
+        content.querySelector('[data-map-load-error]')?.remove();
+        content.insertAdjacentHTML('beforeend', `<div data-map-load-error>
+          <p class="banner error" role="alert">불러오기 실패 · ${escape(error.message)}</p>
+          <button type="button" class="button secondary">다시 불러오기</button>
+        </div>`);
+        content.querySelector('[data-map-load-error] button').addEventListener('click', load);
       } finally {
-        loading = false;
+        if (pending === loadToken) pending = null;
       }
     }
     details.addEventListener('toggle', () => {
       if (details.open) load();
     });
+    return () => {
+      valid = false;
+      pending = null;
+      load();
+    };
   }
 
   async function saveRelation(task, type, target, remove) {
@@ -468,6 +516,7 @@
       const result = await request(`/api/tasks/${encodeURIComponent(task.id)}/relations`, {
         method:'POST', body:JSON.stringify({type,target,version:task.version,remove}),
       });
+      state.taskWriteSequence++;
       const index = state.tasks.findIndex(item => item.id === task.id);
       if (index >= 0) state.tasks[index] = result.task;
       render();
@@ -483,6 +532,12 @@
     }
   }
 
+  function bindRelationRemoval(content, task) {
+    for (const button of content.querySelectorAll('[data-unlink]')) {
+      button.addEventListener('click', () => saveRelation(task, button.dataset.unlink, button.dataset.target, true));
+    }
+  }
+
   function updateTicketUrl(id) {
     const url = new URL(location.href);
     if (id) url.searchParams.set('ticket', id);
@@ -490,12 +545,15 @@
     if (url.href !== location.href) history.replaceState(history.state, '', url);
   }
 
-  function closeDetail() {
+  function closeDetail({restoreFocus = true} = {}) {
     const id = state.selectedId;
     if (!id) return;
     state.detailSequence++;
+    state.detailVersion = null;
+    state.detailRelationships = null;
+    state.refreshTaskMap = null;
     state.selectedId = null;
-    const selectedTitle = $('task-rows').querySelector('.task-title[aria-current="true"]');
+    const selectedTitle = selectedTicketTitle();
     $('workspace-layout').removeAttribute('data-ticket-open');
     $('detail-header').hidden = true;
     $('detail-content').hidden = true;
@@ -504,7 +562,9 @@
     $('detail-empty').hidden = false;
     markSelectedTicket();
     updateTicketUrl(null);
-    (selectedTitle ?? $('search')).focus({preventScroll: Boolean(selectedTitle)});
+    if (restoreFocus) {
+      (selectedTitle ?? $('search')).focus({preventScroll: Boolean(selectedTitle && titleInView(selectedTitle))});
+    }
   }
 
   async function openDetail(id, {focus = true} = {}) {
@@ -521,14 +581,35 @@
     updateTicketUrl(id);
     markSelectedTicket();
     if (switching) {
+      state.detailVersion = null;
+      state.detailRelationships = null;
+      state.refreshTaskMap = null;
       content.innerHTML = '<h2 id="detail-title">불러오는 중…</h2>';
       $('detail-panel').scrollTop = 0;
+      const title = selectedTicketTitle();
+      if (title && getComputedStyle($('ticket-list')).display !== 'none' && !titleInView(title)) {
+        title.scrollIntoView?.({block: 'nearest'});
+      }
     }
     content.setAttribute('aria-busy', 'true');
     if (focus) $('detail-id').focus();
     try {
       const { task, history, relationships = {items:[],counts:{}} } = await request(`/api/tasks/${encodeURIComponent(id)}`);
       if (sequence !== state.detailSequence) return;
+      const index = state.tasks.findIndex(item => item.id === id);
+      if (index >= 0 && state.tasks[index].version < task.version) {
+        state.tasks[index] = task;
+        render();
+      }
+      if (state.detailVersion === task.version) {
+        if (JSON.stringify(state.detailRelationships.items) !== JSON.stringify(relationships.items)) {
+          const list = content.querySelector('.relation-list');
+          list.innerHTML = relationshipItems(relationships);
+          bindRelationRemoval(list, task);
+          state.detailRelationships = relationships;
+        }
+        return;
+      }
       const sources = task.sources
         .map((source, index) =>
           source.url
@@ -571,7 +652,7 @@
           <h3>변경 이력 <span class="muted">버전 ${task.version}</span></h3>
           <ol class="history">${history.map((item) => `<li>${escape(date(item.created_at))} · ${item.action === 'created' ? '등록' : '수정'}<p>${escape(item.note || '기록 업데이트')}</p></li>`).join('')}</ol>
         </section>`;
-      mountTaskMap(id, sequence);
+      state.refreshTaskMap = mountTaskMap(id);
       $('detail-content')
         .querySelectorAll('[data-source-index]')
         .forEach((button) =>
@@ -583,18 +664,19 @@
         const target = $('relation-target').value.trim().toUpperCase();
         saveRelation(task, type, target, false);
       });
-      $('detail-content').querySelectorAll('[data-unlink]').forEach(button => button.addEventListener('click', () => saveRelation(task, button.dataset.unlink, button.dataset.target, true)));
+      bindRelationRemoval(content, task);
       const copyButton = $('detail-content').querySelector('[data-copy-task]');
-      if (copyButton) copyButton.addEventListener('click', () => copyTask(task, copyButton, relationships));
-      const index = state.tasks.findIndex((item) => item.id === id);
-      if (index >= 0 && state.tasks[index].version !== task.version) {
-        state.tasks[index] = task;
-        render();
-      }
+      if (copyButton) copyButton.addEventListener('click', () => copyTask(task, copyButton, state.detailRelationships));
+      state.detailRelationships = relationships;
+      state.detailVersion = task.version;
     } catch (error) {
-      if (sequence === state.detailSequence)
+      if (sequence === state.detailSequence) {
+        state.detailVersion = null;
+        state.detailRelationships = null;
+        state.refreshTaskMap = null;
         content.innerHTML =
           `<h2 id="detail-title">불러오기 실패</h2><p class="banner error">${escape(error.message)}</p>`;
+      }
     } finally {
       if (sequence === state.detailSequence) content.removeAttribute('aria-busy');
     }
@@ -881,6 +963,7 @@
           note: `사용자 QA 완료 처리 · ${qaResults[result]}`,
         }),
       });
+      state.taskWriteSequence++;
       state.tasks = state.tasks.map((item) => (item.id === saved.id ? saved : item));
       $('qa-completion').close();
       state.completing = null;
@@ -949,6 +1032,7 @@
         method: state.editing ? 'PATCH' : 'POST',
         body: JSON.stringify(payload),
       });
+      state.taskWriteSequence++;
       const index = state.tasks.findIndex((item) => item.id === task.id);
       if (index >= 0) state.tasks[index] = task;
       else state.tasks.push(task);
@@ -988,6 +1072,7 @@
           note: task.queue === 'archived' ? '보관 해제' : '보관함으로 이동',
         }),
       });
+      state.taskWriteSequence++;
       state.tasks = state.tasks.map((item) => (item.id === id ? result.task : item));
       render();
       if (state.selectedId === id) await openDetail(id);
@@ -1189,18 +1274,23 @@
   });
   $('qa-completion-form').addEventListener('submit', completeQa);
   document.addEventListener('keydown', (event) => {
-    if (event.key === 'Escape' && state.selectedId && $('detail-panel').contains(event.target) &&
-        !document.querySelector('dialog[open]')) {
+    if (event.defaultPrevented || document.querySelector('dialog[open]')) return;
+    if (event.key === 'Escape' && state.selectedId && $('detail-panel').contains(event.target)) {
       event.preventDefault();
       closeDetail();
       return;
     }
     if (
       event.key === '/' &&
-      !document.querySelector('dialog[open]') &&
-      !event.target.closest('input,textarea,select')
+      !event.altKey && !event.ctrlKey && !event.metaKey &&
+      !event.target.closest?.('input,textarea,select') &&
+      !event.target.isContentEditable &&
+      !event.target.closest?.('[contenteditable]:not([contenteditable="false"])')
     ) {
       event.preventDefault();
+      if (state.selectedId && getComputedStyle($('ticket-list')).display === 'none') {
+        closeDetail({restoreFocus: false});
+      }
       $('search').focus();
     }
   });

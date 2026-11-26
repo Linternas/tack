@@ -46,7 +46,8 @@
     sessions:'<path d="M3 10a9 9 0 1 1 2 8M3 4v6h6m3-4v6l4 2"/>',
     projects:'<path d="M3 7V5a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M8 11v5m4-5v3m4-3v7"/>',
     documents:'<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Zm0 0v6h6M8 13h8m-8 4h6"/>',
-    usage:'<path d="M4 3v17a1 1 0 0 0 1 1h16M9 16v-5m5 5V6m5 10V9"/>'
+    usage:'<path d="M4 3v17a1 1 0 0 0 1 1h16M9 16v-5m5 5V6m5 10V9"/>',
+    settings:'<path d="M4 7h4m4 0h8M4 17h8m4 0h4"/><circle cx="10" cy="7" r="2"/><circle cx="14" cy="17" r="2"/>'
   };
   window.tackIcon=name=>iconPaths[name]?`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${iconPaths[name]}</svg>`:'';
   const navIcons={'/':'grid','/sessions':'sessions','/projects':'projects','/documents':'archived','/notes':'documents','/usage':'usage','/qa':'qa'};
@@ -61,6 +62,37 @@
     mark.innerHTML=window.tackIcon(icon);
   }
   for (const link of document.querySelectorAll('a[href^="/"]')) link.href = window.workUrl(link.getAttribute('href'));
+  if (window.tackTheme) {
+    sidebar.insertAdjacentHTML('beforeend', `<button type="button" class="nav-item" id="open-theme-settings"
+      aria-label="설정" aria-haspopup="dialog" aria-controls="theme-settings" title="설정">
+      <span class="nav-icon" aria-hidden="true">${window.tackIcon('settings')}</span><span class="nav-label">설정</span>
+    </button>`);
+    document.body.insertAdjacentHTML('beforeend', `<dialog id="theme-settings" aria-labelledby="theme-settings-title">
+      <form method="dialog">
+        <header class="dialog-header"><h2 id="theme-settings-title">설정</h2></header>
+        <div class="form-body">
+          <fieldset><legend>화면 테마</legend>
+            <label class="theme-option"><input type="radio" name="theme" value="paper">문서</label>
+            <label class="theme-option"><input type="radio" name="theme" value="classic">클래식</label>
+          </fieldset>
+        </div>
+        <footer class="dialog-footer"><button class="button secondary" type="submit">닫기</button></footer>
+      </form>
+    </dialog>`);
+    const trigger = document.getElementById('open-theme-settings');
+    const dialog = document.getElementById('theme-settings');
+    const choices = [...dialog.querySelectorAll('input[name="theme"]')];
+    trigger.addEventListener('click', () => {
+      const currentTheme = choices.find(input => input.value === document.documentElement.dataset.theme) ?? choices[0];
+      currentTheme.checked = true;
+      dialog.showModal();
+      currentTheme.focus();
+    });
+    dialog.addEventListener('change', event => {
+      if (choices.includes(event.target) && event.target.checked) window.tackTheme.set(event.target.value);
+    });
+    dialog.addEventListener('close', () => trigger.focus());
+  }
   const picker = document.getElementById('project-picker');
   fetch(window.workUrl('/api/context')).then(async (response) => {
     const data = await response.json();
