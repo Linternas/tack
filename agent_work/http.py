@@ -196,7 +196,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(render_index(store,project),mime='text/html; charset=utf-8')
             assets={'/notes':'notes.html','/':'index.html','/index.html':'index.html','/qa':'qa.html','/qa/':'qa.html','/qa.html':'qa.html','/sessions':'sessions.html','/projects':'projects.html','/usage':'usage.html'}
             name=assets.get(path,path.lstrip('/'))
-            if name not in {'favicon.svg','notes.html','notes.js','index.html','qa.html','sessions.html','dashboard.js','dashboard.css','qa.js','qa.css','common.js','sessions.js','projects.html','projects.js','usage.html','usage.js','usage.css'}:
+            if name not in {'favicon.svg','theme.js','notes.html','notes.js','index.html','qa.html','sessions.html','dashboard.js','dashboard.css','qa.js','qa.css','common.js','sessions.js','projects.html','projects.js','usage.html','usage.js','usage.css'}:
                 raise BoardError('경로를 찾을 수 없습니다.',404)
             mime={'.html':'text/html','.css':'text/css','.js':'application/javascript','.svg':'image/svg+xml'}[Path(name).suffix]
             return self.respond((ASSETS/name).read_bytes(),mime=mime+'; charset=utf-8')

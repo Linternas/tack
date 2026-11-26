@@ -22,8 +22,6 @@ test('project context stays on task APIs, QA links, exports and session navigati
   assert.equal(dom.window.document.querySelector('a[download]').getAttribute('href'), '/api/export?project=project-b');
   assert.equal(dom.window.document.getElementById('project-picker').textContent, '<b>Project B</b>');
   assert.equal(dom.window.document.getElementById('project-picker').querySelector('b'), null);
-  assert.equal(dom.window.document.getElementById('current-project').textContent, '<b>Project B</b>');
-  assert.equal(dom.window.document.getElementById('current-project').querySelector('b'), null);
   assert.equal(dom.window.document.title, '<b>Project B</b> · Tack');
 });
 

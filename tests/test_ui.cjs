@@ -41,8 +41,8 @@ const makeTask = (id, title, category, status = 'todo', options = {}) => ({
   version: 1, created_at: '2026-10-22T00:00:00Z', updated_at: '2026-10-22T00:00:00Z', ...options,
 });
 
-async function setup(context, fixture) {
-  const dom = new JSDOM(html, { url: 'http://127.0.0.1:8788/', runScripts: 'outside-only' });
+async function setup(context, fixture, url = 'http://127.0.0.1:8788/') {
+  const dom = new JSDOM(html, { url, runScripts: 'outside-only' });
   context.after(() => dom.window.close());
   const { window } = dom;
   window.HTMLDialogElement.prototype.showModal = function () { this.setAttribute('open', ''); };
@@ -134,6 +134,271 @@ async function toggleTaskMap(ui, open = true) {
   await tick();
   return map;
 }
+
+test('ticket reader opens beside the filtered list and returns focus to the selected title', async (t) => {
+  const ui = await setup(t, undefined, 'http://127.0.0.1:8788/?project=demo&workspace=%2Fwork#board');
+  await ui.change('search', '목록');
+  await ui.click('.task-title[data-open="ISSUE-001"]');
+  assert.equal(ui.$('detail-panel').tagName, 'SECTION');
+  assert.equal(ui.document.querySelector('dialog[open]'), null);
+  assert.equal(ui.$('workspace-layout').hasAttribute('data-ticket-open'), true);
+  assert.equal(ui.$('detail-empty').hidden, true);
+  assert.equal(ui.$('detail-content').hidden, false);
+  assert.equal(ui.document.activeElement, ui.$('detail-id'));
+  const title = ui.document.querySelector('.task-title[data-open="ISSUE-001"]');
+  assert.equal(title.getAttribute('aria-current'), 'true');
+  assert.equal(title.closest('tr').classList.contains('selected'), true);
+  const headings = [...ui.$('detail-content').querySelectorAll('h3')].map(el => el.textContent.trim());
+  assert.ok(headings.indexOf('다음 할 일') < headings.indexOf('상세 / 현재 제약'));
+  assert.ok(headings.indexOf('완료·확인 기준') < headings.indexOf('작업 관계'));
+  assert.equal(new URL(ui.window.location.href).searchParams.get('ticket'), 'ISSUE-001');
+
+  ui.$('detail-id').dispatchEvent(new ui.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+  assert.equal(ui.$('workspace-layout').hasAttribute('data-ticket-open'), false);
+  assert.equal(ui.$('detail-content').hidden, true);
+  assert.equal(ui.$('detail-empty').hidden, false);
+  assert.equal(ui.document.activeElement, title);
+  assert.equal(title.hasAttribute('aria-current'), false);
+  assert.equal(ui.$('search').value, '목록');
+  assert.deepEqual(ui.rows(), ['ISSUE-001']);
+  assert.equal(ui.window.location.search, '?project=demo&workspace=%2Fwork');
+  assert.equal(ui.window.location.hash, '#board');
+});
+
+test('slash opens mobile search and keeps a visible desktop reader open', async (t) => {
+  const ui = await setup(t);
+  const slash = (target) => target.dispatchEvent(new ui.window.KeyboardEvent('keydown', {
+    key: '/', bubbles: true, cancelable: true,
+  }));
+  await ui.click('.task-title[data-open="ISSUE-001"]');
+  assert.equal(slash(ui.$('detail-id')), false);
+  assert.equal(ui.document.activeElement, ui.$('search'));
+  assert.equal(ui.$('workspace-layout').hasAttribute('data-ticket-open'), true);
+
+  const getStyle = ui.window.getComputedStyle.bind(ui.window);
+  ui.window.getComputedStyle = (element) => element === ui.$('ticket-list') &&
+      ui.$('workspace-layout').hasAttribute('data-ticket-open') ? {display: 'none'} : getStyle(element);
+  ui.$('detail-title').setAttribute('contenteditable', 'true');
+  assert.equal(slash(ui.$('detail-title')), true);
+  await ui.click('[data-edit="ISSUE-001"]');
+  assert.equal(slash(ui.$('detail-id')), true);
+  await ui.click('#cancel-edit');
+  assert.equal(ui.$('workspace-layout').hasAttribute('data-ticket-open'), true);
+  assert.equal(slash(ui.$('detail-id')), false);
+  assert.equal(ui.$('workspace-layout').hasAttribute('data-ticket-open'), false);
+  assert.equal(ui.document.activeElement, ui.$('search'));
+});
+
+test('offscreen selected rows are revealed and can scroll into view when closing the reader', async (t) => {
+  const ui = await setup(t);
+  const title = ui.document.querySelector('.task-title[data-open="ISSUE-001"]');
+  ui.$('ticket-list').getBoundingClientRect = () => ({top: 0, bottom: 400});
+  ui.$('ticket-list').querySelector('.table-scroll').getBoundingClientRect = () => ({top: 90, bottom: 390});
+  title.getBoundingClientRect = () => ({top: 430, bottom: 460});
+  let revealOptions;
+  title.scrollIntoView = options => { revealOptions = options; };
+  await ui.click('.task-title[data-open="ISSUE-001"]');
+  assert.equal(revealOptions?.block, 'nearest');
+  const focus = title.focus.bind(title);
+  let focusOptions;
+  title.focus = options => { focusOptions = options; focus(options); };
+  await ui.click('#close-detail');
+  assert.equal(focusOptions?.preventScroll, false);
+  assert.equal(ui.document.activeElement, title);
+});
+
+test('a completed ticket deep link highlights its row in the completed view', async (t) => {
+  const ui = await setup(t, undefined, 'http://127.0.0.1:8788/?ticket=DONE-001');
+  assert.equal(ui.$('record-view').value, 'done');
+  assert.deepEqual(ui.rows(), ['DONE-001']);
+  assert.equal(ui.document.querySelector('.task-title[aria-current="true"]').dataset.open, 'DONE-001');
+  assert.equal(ui.$('detail-title').textContent, '처리한 문제');
+  await ui.change('search', '보이지 않는 제목');
+  await ui.click('#close-detail');
+  assert.equal(ui.document.activeElement, ui.$('search'));
+  assert.equal(ui.$('search').value, '보이지 않는 제목');
+});
+
+test('an archived ticket deep link selects the archived list', async (t) => {
+  const archived = makeTask('LOCAL-0041', '보관한 정책', 'task', 'archived');
+  const ui = await setup(t, [archived], 'http://127.0.0.1:8788/?ticket=LOCAL-0041');
+  assert.equal(ui.$('record-view').value, 'archived');
+  assert.deepEqual(ui.rows(), ['LOCAL-0041']);
+  assert.equal(ui.document.querySelector('.task-title[aria-current="true"]').dataset.open, 'LOCAL-0041');
+  assert.equal(ui.$('detail-title').textContent, '보관한 정책');
+});
+
+test('a newer ticket detail keeps the document list and status counts in sync', async (t) => {
+  const ui = await setup(t);
+  const issue = ui.records.find(task => task.id === 'ISSUE-001');
+  issue.title = '다른 세션이 저장한 제목';
+  issue.status = 'done';
+  issue.version++;
+  await ui.click('[data-open="ISSUE-001"]');
+  assert.equal(ui.$('detail-title').textContent, issue.title);
+  assert.equal(ui.$('record-view').value, 'all');
+  assert.equal(ui.rows().includes('ISSUE-001'), false);
+  assert.equal(ui.document.querySelector('[data-queue="done"] .metric-number').textContent, '2');
+});
+
+test('ticket requests that resolve after switching or closing cannot change the reader', async (t) => {
+  const ui = await setup(t);
+  const original = ui.window.fetch;
+  let settle;
+  ui.window.fetch = (url, options) => url === '/api/tasks/ISSUE-001'
+    ? new Promise(resolve => { settle = () => resolve(original(url, options)); })
+    : original(url, options);
+  await ui.click('[data-open="ISSUE-001"]');
+  assert.equal(ui.$('detail-content').getAttribute('aria-busy'), 'true');
+  await ui.click('[data-open="QA-001"]');
+  settle();
+  await tick();
+  assert.equal(ui.$('detail-title').textContent, '입력 저장 QA');
+
+  await ui.click('[data-open="ISSUE-001"]');
+  await ui.click('#close-detail');
+  settle();
+  await tick();
+  assert.equal(ui.$('detail-content').childElementCount, 0);
+  assert.equal(ui.$('detail-content').getAttribute('aria-busy'), null);
+  assert.equal(ui.$('detail-empty').hidden, false);
+});
+
+test('archiving a ticket updates the list without interrupting a different document', async (t) => {
+  const ui = await setup(t);
+  const original = ui.window.fetch;
+  let settle;
+  ui.window.fetch = (url, options) => url === '/api/tasks/ISSUE-001' && options.method === 'PATCH'
+    ? new Promise(resolve => { settle = () => resolve(original(url, options)); })
+    : original(url, options);
+  await ui.click('[data-open="ISSUE-001"]');
+  await ui.click('[data-archive="ISSUE-001"]');
+  await ui.click('[data-open="QA-001"]');
+  settle();
+  await tick();
+  assert.equal(ui.$('detail-title').textContent, '입력 저장 QA');
+  assert.equal(ui.rows().includes('ISSUE-001'), false);
+  assert.equal(ui.records.find(task => task.id === 'ISSUE-001').queue, 'archived');
+});
+
+test('refresh preserves a draft and an open map for the same ticket version', async (t) => {
+  const ui = await setup(t);
+  const original = ui.window.fetch;
+  let storedMap = null;
+  let mapReads = 0;
+  ui.window.fetch = (url, options) => {
+    if (url !== '/api/tasks/ISSUE-001/map') return original(url, options);
+    mapReads++;
+    return Promise.resolve({ok: true, json: async () => ({map: structuredClone(storedMap)})});
+  };
+  await ui.click('[data-open="ISSUE-001"]');
+  const target = ui.$('relation-target');
+  target.value = 'QA-001';
+  const map = await toggleTaskMap(ui);
+  assert.match(map.textContent, /등록된 코드 영향 범위와 화면 흐름이 없습니다/);
+  assert.equal(mapReads, 1);
+  storedMap = {revision: 'a'.repeat(40), stale: false, version: 1,
+    nodes: [{id: 'route', kind: 'route', label: '새 코드 지도'}], edges: [], flows: []};
+  await ui.click('#refresh');
+  assert.equal(mapReads, 2);
+  assert.equal(ui.$('relation-target'), target);
+  assert.equal(target.value, 'QA-001');
+  assert.equal(ui.document.querySelector('.task-map'), map);
+  assert.equal(map.open, true);
+  assert.match(map.textContent, /새 코드 지도/);
+  await ui.change('task-map-node', 'route');
+  const mapSelect = ui.$('task-map-node');
+
+  const policy = ui.records.find(task => task.id === 'DEC-001');
+  policy.relations.push({type: 'relates_to', task_id: 'ISSUE-001'});
+  await ui.click('#refresh');
+  assert.match(ui.document.querySelector('.relation-list').textContent, /DEC-001.*담당자 정책/);
+  assert.equal(ui.$('relation-target'), target);
+  assert.equal(target.value, 'QA-001');
+  assert.equal(ui.document.querySelector('.task-map'), map);
+  assert.equal(map.open, true);
+  assert.equal(mapReads, 3);
+  assert.equal(ui.$('task-map-node'), mapSelect);
+  assert.equal(mapSelect.value, 'route');
+  await ui.click('[data-copy-task]');
+  assert.match(ui.clipboard[0], /관련 작업 · DEC-001/);
+
+  await toggleTaskMap(ui, false);
+  storedMap.stale = true;
+  await ui.click('#refresh');
+  assert.equal(mapReads, 3);
+  await toggleTaskMap(ui);
+  assert.equal(mapReads, 4);
+  assert.match(map.textContent, /현재 작업본이 저장 기준과 다릅니다/);
+
+  const issue = ui.records.find(task => task.id === 'ISSUE-001');
+  issue.title = '다른 세션이 저장한 제목';
+  issue.version++;
+  await ui.click('#refresh');
+  assert.equal(ui.$('detail-title').textContent, issue.title);
+});
+
+test('a map refresh supersedes an older response and ignores responses after closing', async (t) => {
+  const ui = await setup(t);
+  const original = ui.window.fetch;
+  const responses = [];
+  ui.window.fetch = (url, options) => url === '/api/tasks/ISSUE-001/map'
+    ? new Promise(resolve => { responses.push(map => resolve({ok: true, json: async () => ({map})})); })
+    : original(url, options);
+  await ui.click('[data-open="ISSUE-001"]');
+  const map = await toggleTaskMap(ui);
+  await ui.click('#refresh');
+  assert.equal(responses.length, 2);
+  responses[1]({revision: 'a'.repeat(40), stale: false, version: 1, nodes: [], edges: [], flows: []});
+  responses[0](null);
+  await tick();
+  assert.match(map.textContent, /기준 커밋/);
+  await ui.click('#refresh');
+  await toggleTaskMap(ui, false);
+  responses[2](null);
+  await tick();
+  assert.match(map.textContent, /기준 커밋/);
+  await toggleTaskMap(ui);
+  assert.equal(responses.length, 4);
+  responses[3](null);
+  await tick();
+  assert.match(map.textContent, /등록된 코드 영향 범위와 화면 흐름이 없습니다/);
+});
+
+test('refresh retries a failed detail with the same ticket version', async (t) => {
+  const ui = await setup(t);
+  await ui.click('[data-open="ISSUE-001"]');
+  const original = ui.window.fetch;
+  ui.window.fetch = (url, options) => url === '/api/tasks/ISSUE-001'
+    ? Promise.reject(new Error('상세 연결 실패'))
+    : original(url, options);
+  await ui.click('#refresh');
+  assert.match(ui.$('detail-content').textContent, /상세 연결 실패/);
+  ui.window.fetch = original;
+  await ui.click('#refresh');
+  assert.equal(ui.$('detail-title').textContent, '목록 요청 버튼');
+});
+
+test('a list refresh taken before a successful archive is fetched again', async (t) => {
+  const ui = await setup(t);
+  const original = ui.window.fetch;
+  let settleSnapshot, listReads = 0;
+  ui.window.fetch = (url, options) => {
+    const snapshot = original(url, options);
+    return url === '/api/tasks' && ++listReads === 1
+      ? new Promise(resolve => { settleSnapshot = () => resolve(snapshot); })
+      : snapshot;
+  };
+  await ui.click('[data-open="ISSUE-001"]');
+  await ui.click('#refresh');
+  await ui.click('[data-archive="ISSUE-001"]');
+  await ui.click('[data-open="DEC-001"]');
+  settleSnapshot();
+  await tick();
+  assert.equal(listReads, 2);
+  assert.equal(ui.rows().includes('ISSUE-001'), false);
+  assert.equal(ui.$('detail-title').textContent, '담당자 정책');
+});
 
 test('ticket map loads on demand, filters both directions and labels evidence', async (t) => {
   const ui = await setup(t);
@@ -276,6 +541,11 @@ test('ticket map retries after error and ignores a response for another open tic
 test('initial view separates ongoing work from completed history', async (t) => {
   const ui = await setup(t);
   assert.equal(ui.rows().length, 5);
+  const rows = [...ui.$('task-rows').rows];
+  assert.ok(rows.every(row => row.cells.length === 1));
+  assert.equal(rows.find(row => row.dataset.taskId === 'ISSUE-001').querySelector('[data-complete-qa]'), null);
+  assert.equal(rows.find(row => row.dataset.taskId === 'QA-001')
+    .querySelector('.task-meta:last-child [data-complete-qa]').dataset.completeQa, 'QA-001');
   assert.equal(ui.$('status-filter'), null);
   assert.equal(ui.$('actionable-toggle'), null);
   assert.equal(ui.$('include-closed'), null);

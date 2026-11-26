@@ -60,3 +60,8 @@
 @media (max-width: 1350px) { .qa-execution { grid-template-columns: 1fr; } .qa-result { border-left: 0; border-top: 1px solid var(--line); border-radius: 0; } .qa-result-buttons { flex-direction: row; } .qa-workspace { grid-template-columns: 250px minmax(0, 1fr); } }
 @media (max-width: 850px) { .qa-catalog { top: 10px; } .scenario-heading { flex-direction: column; } .scenario-actions { justify-content: start; } .qa-overview { gap: 12px; padding: 16px; } .qa-overview > div:not(.qa-progress) { flex-direction: column; align-items: start; gap: 3px; } }
 @media (max-width: 650px) { .qa-workspace { grid-template-columns: 1fr; } .qa-catalog { position: static; } .qa-scenario-list { max-height: 240px; } .qa-progress { align-items: start; flex-direction: column; gap: 6px; } .qa-progress span { white-space: normal; } .qa-overview { gap: 8px; } .qa-overview strong { font-size: 22px; } .scenario-header, .qa-instructions { padding: 18px; } .qa-result { padding: 20px 18px; } .qa-result-buttons { flex-direction: column; } .scenario-heading h2 { font-size: 18px; } }
+:root[data-theme="paper"] .scenario-item strong { font-size: 14px; }
+:root[data-theme="paper"] .scenario-heading h2 { font-size: clamp(18px, 2.4vw, 26px); font-weight: 650; }
+:root[data-theme="paper"] :is(.qa-instructions h3, .qa-result h3) { font-size: 15px; }
+:root[data-theme="paper"] :is(.qa-instructions .prose, .qa-step-list li span) { font-size: 15px; line-height: 1.75; }
+:root[data-theme="paper"] :is(.qa-result p, .qa-history) { font-size: 13px; }

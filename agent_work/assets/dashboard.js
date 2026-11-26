@@ -15,6 +15,10 @@
     queue: '',
     selectedId: null,
     detailSequence: 0,
+    detailVersion: null,
+    detailRelationships: null,
+    refreshTaskMap: null,
+    taskWriteSequence: 0,
     editing: null,
     completing: null,
     completionInitial: '',
@@ -84,21 +88,13 @@
 
   function render() {
     const apiOnly = $('api-only').checked;
-    $('metrics').setAttribute('aria-label',apiOnly ? 'API 요청 업무 목록 요약' : '개발 현황 요약');
+    $('metrics').setAttribute('aria-label', apiOnly ? 'API 요청 상태별 필터' : '작업 상태별 필터');
     const scoped = state.tasks.filter(task => !apiOnly || task.is_api_request);
-    const metrics = [
-      ['todo','grid','착수하기로 정한 작업'],
-      ['in_progress','qa','현재 수행 중인 작업'],
-      ['issue','issue','조사·처리할 문제'],
-      ['qa','qa','검증할 항목'],
-      ['waiting','api','결정·외부 조건 대기'],
-      ['done','done','완료 기록 보기'],
-    ];
-    $('metrics').innerHTML = metrics
-      .map(([queue, icon, hint]) => {
+    $('metrics').innerHTML = ['todo', 'in_progress', 'issue', 'qa', 'waiting', 'done']
+      .map((queue) => {
         const count = scoped.filter((task) => task.queue === queue).length;
         const selected = queue === 'done' ? state.mode === 'done' : state.mode === 'all' && state.queue === queue;
-        return `<button class="metric ${queue}" data-queue="${queue}" aria-pressed="${selected}"><span class="metric-top">${queues[queue]}<span class="metric-icon" aria-hidden="true">${window.tackIcon?.(icon)||''}</span></span><strong class="metric-number">${count}</strong><span class="metric-note">${hint}</span></button>`;
+        return `<button class="metric ${queue}" data-queue="${queue}" aria-pressed="${selected}">${queues[queue]} <strong class="metric-number">${count}</strong></button>`;
       })
       .join('');
     const areas = [...new Set(state.tasks.flatMap((task) => task.areas))].sort((a, b) => a.localeCompare(b, 'ko'));
@@ -149,11 +145,51 @@
     $('task-rows').innerHTML = visible.length
       ? visible
           .map(
-            (task) =>
-              `<tr data-task-id="${escape(task.id)}"><td><span class="priority ${escape(task.priority)}">${escape(task.priority)}</span></td><td><button class="task-title" data-open="${escape(task.id)}">${escape(task.title)}</button>${task.page_path ? `<code class="task-page-path" title="${escape(task.page_path)}">${escape(task.page_path)}</code>` : ''}<div class="task-meta"><span class="monospace">${escape(task.id)}</span><span>·</span><span>${escape(task.areas.join(' · ') || '공통')}</span>${task.is_api_request ? '<span class="badge api">API 요청</span>' : ''}${task.parent_id ? `<button class="source-link" data-open="${escape(task.parent_id)}">상위 ${escape(task.parent_id)}</button>` : ''}${(task.relations || []).filter(link => link.type !== 'relates_to').map(link => `<button class="source-link" data-open="${escape(link.task_id)}">${escape(relationLabels[link.type])} ${escape(link.task_id)}</button>`).join('')}${missingDependencies(task).length ? `<span class="dependency-tag">· 선행 ${missingDependencies(task).length}건</span>` : ''}</div></td><td>${badge(task.queue, queues)}</td><td>${escape(task.owner || '미지정')}</td><td class="date">${escape(task.last_checked || '미확인')}</td><td>${task.queue === 'qa' ? `<button class="button secondary" data-complete-qa="${escape(task.id)}" aria-label="${escape(task.id)} QA 완료 처리">QA 완료 처리</button>` : '<span class="arrow" aria-hidden="true">›</span>'}</td></tr>`
+            (task) => `<tr data-task-id="${escape(task.id)}">
+              <td>
+                <button class="task-title" data-open="${escape(task.id)}">${escape(task.title)}</button>
+                <div class="task-meta"><span class="monospace">${escape(task.id)}</span>
+                  ${badge(task.queue, queues)}<span class="priority ${escape(task.priority)}">${escape(task.priority)}</span>
+                  ${task.is_api_request ? '<span class="badge api">API 요청</span>' : ''}
+                </div>
+                ${task.summary ? `<p class="task-excerpt">${escape(task.summary)}</p>` : ''}
+                ${task.page_path ? `<code class="task-page-path" title="${escape(task.page_path)}">${escape(task.page_path)}</code>` : ''}
+                <div class="task-meta">
+                  <span>${escape(task.areas.join(' · ') || '공통')}</span>
+                  ${task.owner ? `<span>· ${escape(task.owner)}</span>` : ''}
+                  ${task.last_checked ? `<span>· ${escape(task.last_checked)}</span>` : ''}
+                  ${task.parent_id ? `<button class="source-link" data-open="${escape(task.parent_id)}">상위 ${escape(task.parent_id)}</button>` : ''}
+                  ${(task.relations || []).filter(link => link.type !== 'relates_to').map(link => `<button class="source-link" data-open="${escape(link.task_id)}">${escape(relationLabels[link.type])} ${escape(link.task_id)}</button>`).join('')}
+                  ${missingDependencies(task).length ? `<span class="dependency-tag">· 선행 ${missingDependencies(task).length}건</span>` : ''}
+                  ${task.queue === 'qa' ? `<button class="button secondary task-row-qa" data-complete-qa="${escape(task.id)}" aria-label="${escape(task.id)} QA 완료 처리">QA 완료 처리</button>` : ''}
+                </div>
+              </td>
+            </tr>`
           )
           .join('')
-      : `<tr><td colspan="6" class="empty">${state.loaded ? '조건에 맞는 항목이 없습니다.' : '기록을 불러오는 중입니다.'}</td></tr>`;
+      : `<tr><td class="empty">${state.loaded ? '조건에 맞는 항목이 없습니다.' : '기록을 불러오는 중입니다.'}</td></tr>`;
+    markSelectedTicket();
+  }
+
+  function markSelectedTicket() {
+    for (const title of $('task-rows').querySelectorAll('.task-title')) {
+      const selected = title.dataset.open === state.selectedId;
+      title.closest('tr').classList.toggle('selected', selected);
+      if (selected) title.setAttribute('aria-current', 'true');
+      else title.removeAttribute('aria-current');
+    }
+  }
+
+  function selectedTicketTitle() {
+    return $('task-rows').querySelector('.task-title[aria-current="true"]');
+  }
+
+  function titleInView(title) {
+    const bounds = title.getBoundingClientRect();
+    const list = $('ticket-list').getBoundingClientRect();
+    const scroller = $('ticket-list').querySelector('.table-scroll').getBoundingClientRect();
+    return bounds.top >= Math.max(0, list.top, scroller.top) &&
+      bounds.bottom <= Math.min(window.innerHeight, list.bottom, scroller.bottom);
   }
 
   function searchChanged() {
@@ -172,13 +208,25 @@
   async function refresh(notify = true) {
     $('refresh').disabled = true;
     try {
-      const data = await request('/api/tasks');
+      let data;
+      let writeSequence;
+      do {
+        writeSequence = state.taskWriteSequence;
+        data = await request('/api/tasks');
+      } while (writeSequence !== state.taskWriteSequence);
       state.tasks = data.tasks;
       state.loaded = true;
       $('connection-error').hidden = true;
       $('saved-at').textContent = `SQLite · ${date(data.saved_at)} 불러옴`;
       searchChanged();
-      if (notify) toast('최신 기록을 불러왔습니다.');
+      if (notify) {
+        if (state.selectedId) {
+          const refreshTaskMap = state.refreshTaskMap;
+          await openDetail(state.selectedId, {focus: false});
+          if (state.refreshTaskMap === refreshTaskMap) refreshTaskMap?.();
+        }
+        toast('최신 기록을 불러왔습니다.');
+      }
     } catch (error) {
       $('connection-error').textContent =
         `대시보드 서버에 연결하지 못했습니다. Python 서버 실행 상태를 확인해주세요.\n${error.message}`;
@@ -193,10 +241,14 @@
     content
       ? `<section class="detail-section"><h3>${escape(title)}</h3><p class="prose">${escape(content)}</p></section>`
       : '';
+  function relationshipItems(relationships) {
+    return relationships.items.map(item => `<li class="relation-row"><span>${escape(relationLabels[item.type])}</span><button class="source-link" data-open="${escape(item.id)}">${escape(item.id)} · ${escape(item.title)}</button>${badge(item.queue,queues)}${item.outgoing ? `<button class="icon-button" data-unlink="${escape(item.type)}" data-target="${escape(item.id)}" aria-label="${escape(item.id)} ${escape(relationLabels[item.type])} 관계 해제">×</button>` : ''}</li>`).join('') ||
+      '<li class="muted">연결된 작업이 없습니다.</li>';
+  }
+
   function relationshipSection(task, relationships) {
     const options = ['parent','blocked_by','duplicate_of','superseded_by','relates_to'];
-    const items = relationships.items.map(item => `<li class="relation-row"><span>${escape(relationLabels[item.type])}</span><button class="source-link" data-open="${escape(item.id)}">${escape(item.id)} · ${escape(item.title)}</button>${badge(item.queue,queues)}${item.outgoing ? `<button class="icon-button" data-unlink="${escape(item.type)}" data-target="${escape(item.id)}" aria-label="${escape(item.id)} ${escape(relationLabels[item.type])} 관계 해제">×</button>` : ''}</li>`).join('');
-    return `<section class="detail-section"><div class="detail-actions"><h3>작업 관계</h3><button class="button secondary" data-add-subtask ${task.queue === 'done' ? 'disabled title="상위 작업을 재개한 뒤 하위 작업을 추가하세요."' : ''}>하위 작업 만들기</button></div><ul class="relation-list">${items || '<li class="muted">연결된 작업이 없습니다.</li>'}</ul><div class="relation-form"><select id="relation-type" aria-label="작업 관계 유형">${options.map(type => `<option value="${type}">${relationLabels[type]}</option>`).join('')}</select><input id="relation-target" aria-label="관계 대상 작업 ID" placeholder="연결할 작업 ID"><button id="relation-add" class="button secondary">관계 연결</button></div><p id="relation-error" class="banner error" role="alert" hidden></p></section>`;
+    return `<section class="detail-section"><div class="detail-actions"><h3>작업 관계</h3><button class="button secondary" data-add-subtask ${task.queue === 'done' ? 'disabled title="상위 작업을 재개한 뒤 하위 작업을 추가하세요."' : ''}>하위 작업 만들기</button></div><ul class="relation-list">${relationshipItems(relationships)}</ul><div class="relation-form"><select id="relation-type" aria-label="작업 관계 유형">${options.map(type => `<option value="${type}">${relationLabels[type]}</option>`).join('')}</select><input id="relation-target" aria-label="관계 대상 작업 ID" placeholder="연결할 작업 ID"><button id="relation-add" class="button secondary">관계 연결</button></div><p id="relation-error" class="banner error" role="alert" hidden></p></section>`;
   }
 
   function renderImpactGraph(items, edges, selected, highlighted) {
@@ -380,7 +432,7 @@
     };
 
     select?.addEventListener('change', () => { flowIndex = null; draw(); });
-    content.addEventListener('click', event => {
+    content.onclick = event => {
       const button = event.target.closest('[data-map-flow]');
       if (button && select) {
         const index = Number(button.dataset.mapFlow);
@@ -394,7 +446,7 @@
         draw();
         select.focus({preventScroll: true});
       }
-    });
+    };
     graph.addEventListener('click', event => {
       const link = event.target.closest('[data-graph-node]');
       if (!link || !select) return;
@@ -407,38 +459,52 @@
     draw();
   }
 
-  function mountTaskMap(id, sequence) {
-    $('detail-content').querySelector('.detail-page-path').insertAdjacentHTML('afterend', `
-      <details class="detail-section task-map">
-        <summary>코드 영향 범위 · 화면 흐름</summary>
-        <div class="task-map-content"></div>
-      </details>`);
+  function mountTaskMap(id) {
     const details = $('detail-content').querySelector('.task-map');
     const content = details.querySelector('.task-map-content');
-    let loading = false;
-    let loaded = false;
+    const isCurrent = () => details.isConnected && details.open && state.selectedId === id;
+    let pending;
+    let valid = false;
+    let renderedSignature;
     async function load() {
-      if (loading || loaded || sequence !== state.detailSequence) return;
-      loading = true;
-      content.innerHTML = '<p class="muted" role="status">코드 영향 범위와 화면 흐름을 불러오는 중…</p>';
+      if (pending || valid || !isCurrent()) return;
+      const loadToken = pending = {};
+      if (renderedSignature === undefined) {
+        content.innerHTML = '<p class="muted" role="status">코드 영향 범위와 화면 흐름을 불러오는 중…</p>';
+      }
       try {
         const {map} = await request(`/api/tasks/${encodeURIComponent(id)}/map`);
-        if (sequence !== state.detailSequence) return;
-        if (map) renderTaskMap(content, map);
-        else content.innerHTML = '<p class="muted">등록된 코드 영향 범위와 화면 흐름이 없습니다.</p>';
-        loaded = true;
+        if (pending !== loadToken || !isCurrent()) return;
+        content.querySelector('[data-map-load-error]')?.remove();
+        const signature = JSON.stringify(map ?? null);
+        if (signature !== renderedSignature) {
+          content.onclick = null;
+          if (map) renderTaskMap(content, map);
+          else content.innerHTML = '<p class="muted">등록된 코드 영향 범위와 화면 흐름이 없습니다.</p>';
+          renderedSignature = signature;
+        }
+        valid = true;
       } catch (error) {
-        if (sequence !== state.detailSequence) return;
-        content.innerHTML = `<p class="banner error" role="alert">불러오기 실패 · ${escape(error.message)}</p>
-          <button type="button" class="button secondary">다시 불러오기</button>`;
-        content.querySelector('button').addEventListener('click', load);
+        if (pending !== loadToken || !isCurrent()) return;
+        if (renderedSignature === undefined) content.replaceChildren();
+        content.querySelector('[data-map-load-error]')?.remove();
+        content.insertAdjacentHTML('beforeend', `<div data-map-load-error>
+          <p class="banner error" role="alert">불러오기 실패 · ${escape(error.message)}</p>
+          <button type="button" class="button secondary">다시 불러오기</button>
+        </div>`);
+        content.querySelector('[data-map-load-error] button').addEventListener('click', load);
       } finally {
-        loading = false;
+        if (pending === loadToken) pending = null;
       }
     }
     details.addEventListener('toggle', () => {
       if (details.open) load();
     });
+    return () => {
+      valid = false;
+      pending = null;
+      load();
+    };
   }
 
   async function saveRelation(task, type, target, remove) {
@@ -450,10 +516,11 @@
       const result = await request(`/api/tasks/${encodeURIComponent(task.id)}/relations`, {
         method:'POST', body:JSON.stringify({type,target,version:task.version,remove}),
       });
+      state.taskWriteSequence++;
       const index = state.tasks.findIndex(item => item.id === task.id);
       if (index >= 0) state.tasks[index] = result.task;
       render();
-      if (state.selectedId === task.id) await openDetail(task.id);
+      if (state.selectedId === task.id) await openDetail(task.id, {focus: false});
       toast(remove ? '관계를 해제했습니다.' : '작업을 연결했습니다.');
     } catch (error) {
       if (state.selectedId === task.id && $('relation-error')) {
@@ -465,16 +532,84 @@
     }
   }
 
-  async function openDetail(id) {
+  function bindRelationRemoval(content, task) {
+    for (const button of content.querySelectorAll('[data-unlink]')) {
+      button.addEventListener('click', () => saveRelation(task, button.dataset.unlink, button.dataset.target, true));
+    }
+  }
+
+  function updateTicketUrl(id) {
+    const url = new URL(location.href);
+    if (id) url.searchParams.set('ticket', id);
+    else url.searchParams.delete('ticket');
+    if (url.href !== location.href) history.replaceState(history.state, '', url);
+  }
+
+  function closeDetail({restoreFocus = true} = {}) {
+    const id = state.selectedId;
+    if (!id) return;
+    state.detailSequence++;
+    state.detailVersion = null;
+    state.detailRelationships = null;
+    state.refreshTaskMap = null;
+    state.selectedId = null;
+    const selectedTitle = selectedTicketTitle();
+    $('workspace-layout').removeAttribute('data-ticket-open');
+    $('detail-header').hidden = true;
+    $('detail-content').hidden = true;
+    $('detail-content').removeAttribute('aria-busy');
+    $('detail-content').replaceChildren();
+    $('detail-empty').hidden = false;
+    markSelectedTicket();
+    updateTicketUrl(null);
+    if (restoreFocus) {
+      (selectedTitle ?? $('search')).focus({preventScroll: Boolean(selectedTitle && titleInView(selectedTitle))});
+    }
+  }
+
+  async function openDetail(id, {focus = true} = {}) {
     const sequence = ++state.detailSequence;
+    const switching = state.selectedId !== id;
+    const content = $('detail-content');
     state.selectedId = id;
+    $('workspace-layout').setAttribute('data-ticket-open', '');
+    $('detail-header').hidden = false;
+    $('detail-empty').hidden = true;
+    content.hidden = false;
     $('detail-id').textContent = id;
     $('copy-detail-status').textContent = '';
-    $('detail-content').innerHTML = '<h2 id="detail-title">불러오는 중…</h2>';
-    if (!$('detail-panel').open) $('detail-panel').showModal();
+    updateTicketUrl(id);
+    markSelectedTicket();
+    if (switching) {
+      state.detailVersion = null;
+      state.detailRelationships = null;
+      state.refreshTaskMap = null;
+      content.innerHTML = '<h2 id="detail-title">불러오는 중…</h2>';
+      $('detail-panel').scrollTop = 0;
+      const title = selectedTicketTitle();
+      if (title && getComputedStyle($('ticket-list')).display !== 'none' && !titleInView(title)) {
+        title.scrollIntoView?.({block: 'nearest'});
+      }
+    }
+    content.setAttribute('aria-busy', 'true');
+    if (focus) $('detail-id').focus();
     try {
       const { task, history, relationships = {items:[],counts:{}} } = await request(`/api/tasks/${encodeURIComponent(id)}`);
       if (sequence !== state.detailSequence) return;
+      const index = state.tasks.findIndex(item => item.id === id);
+      if (index >= 0 && state.tasks[index].version < task.version) {
+        state.tasks[index] = task;
+        render();
+      }
+      if (state.detailVersion === task.version) {
+        if (JSON.stringify(state.detailRelationships.items) !== JSON.stringify(relationships.items)) {
+          const list = content.querySelector('.relation-list');
+          list.innerHTML = relationshipItems(relationships);
+          bindRelationRemoval(list, task);
+          state.detailRelationships = relationships;
+        }
+        return;
+      }
       const sources = task.sources
         .map((source, index) =>
           source.url
@@ -482,9 +617,42 @@
             : `<button class="source-link" data-source-index="${index}">${escape(source.label)} ↗</button>`
         )
         .join('');
-      $('detail-content').innerHTML =
-        `<div class="detail-badges"><span class="priority ${escape(task.priority)}">${escape(task.priority)}</span>${badge(task.queue, queues)}${task.is_api_request ? '<span class="badge api">API 요청</span>' : ''}</div><h2 id="detail-title">${escape(task.title)}</h2><p class="detail-summary">${escape(task.summary)}</p><section class="detail-page-path"><h3>페이지 경로</h3><code>${escape(task.page_path || '미기록')}</code></section><div class="detail-actions">${task.queue === 'qa' ? `<button class="button primary" data-complete-qa="${escape(id)}">QA 완료 처리</button>` : ''}<button class="button ${task.queue === 'qa' ? 'secondary' : 'primary'}" data-edit="${escape(id)}">내용·상태 수정</button>${task.queue === 'issue' || task.category === 'issue' ? '<button class="button secondary" data-copy-task>에이전트용 복사</button>' : ''}<button class="button secondary" data-archive="${escape(id)}">${task.queue === 'archived' ? '보관 해제' : '보관'}</button></div><div class="detail-facts"><div><span>영역</span><strong>${escape(task.areas.join(' · ') || '공통')}</strong></div><div><span>담당 구분</span><strong>${escape(task.owner || '미지정')}</strong></div><div><span>최근 확인</span><strong>${escape(task.last_checked || '미확인')}</strong></div><div><span>확인 근거</span><strong>${escape(task.verification || '미기록')}</strong></div></div>${relationshipSection(task, relationships)}${section('상세 / 현재 제약', task.detail)}${section('다음 할 일', task.next_action)}${section('완료·확인 기준', task.acceptance)}${task.category === 'qa' ? section(`QA 판정 · ${qaResults[task.qa_result]}`, '준비 조건\n' + (task.qa.preconditions || '미기록')) + section('테스트 절차', task.qa.steps) + section('기대 결과', task.qa.expected) + section('실제 결과', task.qa.actual || '아직 실행 결과가 기록되지 않았습니다.') + section('증거', task.qa.evidence) : ''}${section('처리·결정 내용', task.resolution)}${sources ? `<section class="detail-section"><h3>근거 문서·티켓</h3><div class="source-list">${sources}</div></section>` : ''}<section class="detail-section"><h3>변경 이력 <span class="muted">버전 ${task.version}</span></h3><ol class="history">${history.map((item) => `<li>${escape(date(item.created_at))} · ${item.action === 'created' ? '등록' : '수정'}<p>${escape(item.note || '기록 업데이트')}</p></li>`).join('')}</ol></section>`;
-      mountTaskMap(id, sequence);
+      content.innerHTML = `
+        <h2 id="detail-title">${escape(task.title)}</h2>
+        <div class="detail-badges">
+          ${badge(task.queue, queues)}<span class="priority ${escape(task.priority)}">${escape(task.priority)}</span>
+          ${task.is_api_request ? '<span class="badge api">API 요청</span>' : ''}
+        </div>
+        ${task.summary ? `<p class="detail-summary">${escape(task.summary)}</p>` : ''}
+        <div class="detail-actions">
+          ${task.queue === 'qa' ? `<button class="button primary" data-complete-qa="${escape(id)}">QA 완료 처리</button>` : ''}
+          <button class="button ${task.queue === 'qa' ? 'secondary' : 'primary'}" data-edit="${escape(id)}">내용·상태 수정</button>
+          ${task.queue === 'issue' || task.category === 'issue' ? '<button class="button secondary" data-copy-task>에이전트용 복사</button>' : ''}
+          <button class="button secondary" data-archive="${escape(id)}">${task.queue === 'archived' ? '보관 해제' : '보관'}</button>
+        </div>
+        <div class="detail-facts">
+          <div><span>영역</span><strong>${escape(task.areas.join(' · ') || '공통')}</strong></div>
+          <div><span>담당 구분</span><strong>${escape(task.owner || '미지정')}</strong></div>
+          <div><span>최근 확인</span><strong>${escape(task.last_checked || '미확인')}</strong></div>
+          <div><span>확인 근거</span><strong>${escape(task.verification || '미기록')}</strong></div>
+        </div>
+        <section class="detail-page-path"><h3>페이지 경로</h3><code>${escape(task.page_path || '미기록')}</code></section>
+        ${section('다음 할 일', task.next_action)}
+        ${section('상세 / 현재 제약', task.detail)}
+        ${section('완료·확인 기준', task.acceptance)}
+        ${task.category === 'qa' ? section(`QA 판정 · ${qaResults[task.qa_result]}`, '준비 조건\n' + (task.qa.preconditions || '미기록')) + section('테스트 절차', task.qa.steps) + section('기대 결과', task.qa.expected) + section('실제 결과', task.qa.actual || '아직 실행 결과가 기록되지 않았습니다.') + section('증거', task.qa.evidence) : ''}
+        ${section('처리·결정 내용', task.resolution)}
+        <details class="detail-section task-map">
+          <summary>코드 영향 범위 · 화면 흐름</summary>
+          <div class="task-map-content"></div>
+        </details>
+        ${relationshipSection(task, relationships)}
+        ${sources ? `<section class="detail-section"><h3>근거 문서·티켓</h3><div class="source-list">${sources}</div></section>` : ''}
+        <section class="detail-section">
+          <h3>변경 이력 <span class="muted">버전 ${task.version}</span></h3>
+          <ol class="history">${history.map((item) => `<li>${escape(date(item.created_at))} · ${item.action === 'created' ? '등록' : '수정'}<p>${escape(item.note || '기록 업데이트')}</p></li>`).join('')}</ol>
+        </section>`;
+      state.refreshTaskMap = mountTaskMap(id);
       $('detail-content')
         .querySelectorAll('[data-source-index]')
         .forEach((button) =>
@@ -496,15 +664,21 @@
         const target = $('relation-target').value.trim().toUpperCase();
         saveRelation(task, type, target, false);
       });
-      $('detail-content').querySelectorAll('[data-unlink]').forEach(button => button.addEventListener('click', () => saveRelation(task, button.dataset.unlink, button.dataset.target, true)));
+      bindRelationRemoval(content, task);
       const copyButton = $('detail-content').querySelector('[data-copy-task]');
-      if (copyButton) copyButton.addEventListener('click', () => copyTask(task, copyButton, relationships));
-      const index = state.tasks.findIndex((item) => item.id === id);
-      if (index >= 0) state.tasks[index] = task;
+      if (copyButton) copyButton.addEventListener('click', () => copyTask(task, copyButton, state.detailRelationships));
+      state.detailRelationships = relationships;
+      state.detailVersion = task.version;
     } catch (error) {
-      if (sequence === state.detailSequence)
-        $('detail-content').innerHTML =
+      if (sequence === state.detailSequence) {
+        state.detailVersion = null;
+        state.detailRelationships = null;
+        state.refreshTaskMap = null;
+        content.innerHTML =
           `<h2 id="detail-title">불러오기 실패</h2><p class="banner error">${escape(error.message)}</p>`;
+      }
+    } finally {
+      if (sequence === state.detailSequence) content.removeAttribute('aria-busy');
     }
   }
 
@@ -789,6 +963,7 @@
           note: `사용자 QA 완료 처리 · ${qaResults[result]}`,
         }),
       });
+      state.taskWriteSequence++;
       state.tasks = state.tasks.map((item) => (item.id === saved.id ? saved : item));
       $('qa-completion').close();
       state.completing = null;
@@ -857,6 +1032,7 @@
         method: state.editing ? 'PATCH' : 'POST',
         body: JSON.stringify(payload),
       });
+      state.taskWriteSequence++;
       const index = state.tasks.findIndex((item) => item.id === task.id);
       if (index >= 0) state.tasks[index] = task;
       else state.tasks.push(task);
@@ -896,9 +1072,10 @@
           note: task.queue === 'archived' ? '보관 해제' : '보관함으로 이동',
         }),
       });
+      state.taskWriteSequence++;
       state.tasks = state.tasks.map((item) => (item.id === id ? result.task : item));
       render();
-      await openDetail(id);
+      if (state.selectedId === id) await openDetail(id);
       toast('상태를 저장했습니다.');
     } catch (error) {
       toast(error.message);
@@ -1071,11 +1248,7 @@
       if (sequence === state.detailSequence) status.textContent = '복사 실패';
     }
   });
-  $('close-detail').addEventListener('click', () => $('detail-panel').close());
-  $('detail-panel').addEventListener('close', () => {
-    state.detailSequence++;
-    state.selectedId = null;
-  });
+  $('close-detail').addEventListener('click', closeDetail);
   $('edit-queue').addEventListener('change', () => {
     $('qa-fields').hidden = $('edit-queue').value !== 'qa' && !(state.editing?.category === 'qa' && ['done','archived'].includes($('edit-queue').value));
   });
@@ -1101,12 +1274,23 @@
   });
   $('qa-completion-form').addEventListener('submit', completeQa);
   document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || document.querySelector('dialog[open]')) return;
+    if (event.key === 'Escape' && state.selectedId && $('detail-panel').contains(event.target)) {
+      event.preventDefault();
+      closeDetail();
+      return;
+    }
     if (
       event.key === '/' &&
-      !document.querySelector('dialog[open]') &&
-      !event.target.closest('input,textarea,select')
+      !event.altKey && !event.ctrlKey && !event.metaKey &&
+      !event.target.closest?.('input,textarea,select') &&
+      !event.target.isContentEditable &&
+      !event.target.closest?.('[contenteditable]:not([contenteditable="false"])')
     ) {
       event.preventDefault();
+      if (state.selectedId && getComputedStyle($('ticket-list')).display === 'none') {
+        closeDetail({restoreFocus: false});
+      }
       $('search').focus();
     }
   });
@@ -1122,7 +1306,14 @@
   });
   render();
   refresh(false).then(() => {
-    const ticket = new URLSearchParams(location.search).get('ticket');
-    if (ticket && state.tasks.some(task => task.id === ticket)) openDetail(ticket);
+    const id = new URLSearchParams(location.search).get('ticket');
+    const ticket = state.tasks.find(task => task.id === id);
+    if (!ticket || state.selectedId) return;
+    if (closed(ticket)) {
+      state.mode = ticket.queue;
+      $('record-view').value = state.mode;
+      render();
+    }
+    openDetail(ticket.id);
   });
 })();

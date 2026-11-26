@@ -19,9 +19,19 @@
   if(legacyPicker && !pickerInSidebar){pickerInSidebar=document.createElement('label');pickerInSidebar.textContent='프로젝트';pickerInSidebar.append(legacyPicker);}
   if(pickerInSidebar){pickerInSidebar.classList.add('shell-project-picker');document.querySelector('main')?.prepend(pickerInSidebar);}
   sidebar.className='sidebar app-navigation';sidebar.setAttribute('aria-label','앱 메뉴');
-  const menu=[['/','작업 보드'],['/notes','노트'],['/sessions','작업 재개·세션'],['/qa','QA 워크플로우'],['/projects','전체 프로젝트'],['/documents','보관 문서'],['/usage','실행 이력']];
+  const menu = [
+    ['문서', [['/', '티켓'], ['/notes', '노트'], ['/documents', '보관 문서']]],
+    ['기록', [['/sessions', '작업 재개·세션'], ['/usage', '실행 이력']]],
+    ['관리', [['/qa', 'QA 워크플로우'], ['/projects', '전체 프로젝트']]],
+  ];
   const current=location.pathname.startsWith('/documents/')?'/documents':location.pathname;
-  sidebar.innerHTML='<a class="brand" href="/" aria-label="Tack 홈" title="Tack"><span class="brand-symbol">T</span></a><nav aria-label="주 메뉴">'+menu.map(([href,label])=>`<a class="nav-item${current===href?' active':''}" href="${href}" title="${label}" aria-label="${label}"${current===href?' aria-current="page"':''}><span class="nav-icon" aria-hidden="true"></span><span class="nav-label">${label}</span></a>`).join('')+'</nav>';
+  const navigation = menu.map(([group, items]) => {
+    const links = items.map(([href, label]) =>
+      `<a class="nav-item${current === href ? ' active' : ''}" href="${href}" title="${label}" aria-label="${label}"${current === href ? ' aria-current="page"' : ''}><span class="nav-icon" aria-hidden="true"></span><span class="nav-label">${label}</span></a>`
+    ).join('');
+    return `<nav class="nav-group" aria-label="${group}">${links}</nav>`;
+  }).join('');
+  sidebar.innerHTML = '<a class="brand" href="/" aria-label="Tack 홈" title="Tack"><span class="brand-symbol">T</span></a>' + navigation;
   // Older pages had their own navigation row in place of the shared sidebar.
   const oldNav=document.querySelector('main.session-layout > nav');
   if(oldNav){for(const link of oldNav.querySelectorAll('a'))link.remove();if(!oldNav.children.length)oldNav.remove();}
@@ -36,10 +46,11 @@
     sessions:'<path d="M3 10a9 9 0 1 1 2 8M3 4v6h6m3-4v6l4 2"/>',
     projects:'<path d="M3 7V5a2 2 0 0 1 2-2h5l3 3h6a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/><path d="M8 11v5m4-5v3m4-3v7"/>',
     documents:'<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9Zm0 0v6h6M8 13h8m-8 4h6"/>',
-    usage:'<path d="M4 3v17a1 1 0 0 0 1 1h16M9 16v-5m5 5V6m5 10V9"/>'
+    usage:'<path d="M4 3v17a1 1 0 0 0 1 1h16M9 16v-5m5 5V6m5 10V9"/>',
+    settings:'<path d="M4 7h4m4 0h8M4 17h8m4 0h4"/><circle cx="10" cy="7" r="2"/><circle cx="14" cy="17" r="2"/>'
   };
   window.tackIcon=name=>iconPaths[name]?`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${iconPaths[name]}</svg>`:'';
-  const navIcons={'/':'grid','/sessions':'sessions','/projects':'projects','/documents':'documents','/notes':'documents','/usage':'usage','/qa':'qa'};
+  const navIcons={'/':'grid','/sessions':'sessions','/projects':'projects','/documents':'archived','/notes':'documents','/usage':'usage','/qa':'qa'};
   for(const link of document.querySelectorAll('.sidebar .nav-item')){
     const icon=navIcons[new URL(link.getAttribute('href'),location.origin).pathname];
     if(!icon)continue;
@@ -51,6 +62,37 @@
     mark.innerHTML=window.tackIcon(icon);
   }
   for (const link of document.querySelectorAll('a[href^="/"]')) link.href = window.workUrl(link.getAttribute('href'));
+  if (window.tackTheme) {
+    sidebar.insertAdjacentHTML('beforeend', `<button type="button" class="nav-item" id="open-theme-settings"
+      aria-label="설정" aria-haspopup="dialog" aria-controls="theme-settings" title="설정">
+      <span class="nav-icon" aria-hidden="true">${window.tackIcon('settings')}</span><span class="nav-label">설정</span>
+    </button>`);
+    document.body.insertAdjacentHTML('beforeend', `<dialog id="theme-settings" aria-labelledby="theme-settings-title">
+      <form method="dialog">
+        <header class="dialog-header"><h2 id="theme-settings-title">설정</h2></header>
+        <div class="form-body">
+          <fieldset><legend>화면 테마</legend>
+            <label class="theme-option"><input type="radio" name="theme" value="paper">문서</label>
+            <label class="theme-option"><input type="radio" name="theme" value="classic">클래식</label>
+          </fieldset>
+        </div>
+        <footer class="dialog-footer"><button class="button secondary" type="submit">닫기</button></footer>
+      </form>
+    </dialog>`);
+    const trigger = document.getElementById('open-theme-settings');
+    const dialog = document.getElementById('theme-settings');
+    const choices = [...dialog.querySelectorAll('input[name="theme"]')];
+    trigger.addEventListener('click', () => {
+      const currentTheme = choices.find(input => input.value === document.documentElement.dataset.theme) ?? choices[0];
+      currentTheme.checked = true;
+      dialog.showModal();
+      currentTheme.focus();
+    });
+    dialog.addEventListener('change', event => {
+      if (choices.includes(event.target) && event.target.checked) window.tackTheme.set(event.target.value);
+    });
+    dialog.addEventListener('close', () => trigger.focus());
+  }
   const picker = document.getElementById('project-picker');
   fetch(window.workUrl('/api/context')).then(async (response) => {
     const data = await response.json();
@@ -69,6 +111,7 @@
       const url = new URL(location.href);
       url.searchParams.set('project', picker.value);
       url.searchParams.delete('workspace');
+      url.searchParams.delete('ticket');
       location.assign(url);
     });
   }).catch((error) => {
