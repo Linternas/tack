@@ -6,6 +6,7 @@ import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from urllib.parse import quote
 
 from agent_work.store import BoardError, Store
 from agent_work.http import BoardServer
@@ -366,85 +367,96 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(len(reopened["history"]), 5)
 
     def test_assets_and_read_only_source_boundary(self):
-        for path, mime in (("/", "text/html"), ("/dashboard.js", "application/javascript"), ("/dashboard.css", "text/css"), ("/qa", "text/html"), ("/qa/", "text/html"), ("/qa.js", "application/javascript"), ("/qa.css", "text/css")):
+        for path, mime in (("/", "text/html"), ("/dashboard.js", "application/javascript"), ("/dashboard.css", "text/css"), ("/qa", "text/html"), ("/qa/", "text/html"), ("/qa.js", "application/javascript"), ("/qa.css", "text/css"), ("/favicon.svg", "image/svg+xml")):
             status, body, headers = self.request("GET", path)
             self.assertEqual(status, 200)
             self.assertIn(mime, headers["Content-Type"])
             self.assertGreater(len(body), 100)
+            if mime == "text/html":
+                self.assertIn(b'<link rel="icon" href="/favicon.svg"', body)
+            if mime == "image/svg+xml":
+                self.assertTrue(body.startswith(b'<svg'))
         self.assertEqual(self.request("GET", "/api/source?path=docs/test.md")[0], 200)
         for path in ("/dashboard.sqlite3", "/seed.json", "/api/source?path=.env", "/api/source?path=../../etc/passwd"):
             self.assertEqual(self.request("GET", path)[0], 404)
 
 
-class OrganizationHttpBoundaryTests(unittest.TestCase):
+class ExecutionHistoryHttpTests(unittest.TestCase):
     request = HttpTests.request
 
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
         self.folder = Path(self.directory.name).resolve()
-        harness = self.folder / '.tack-orchestration'
-        harness.mkdir()
-        (harness / 'install.json').write_text(json.dumps({'format': 1, 'workspace': str(self.folder)}))
         self.store = Store(self.folder / 'http.sqlite3')
         project = {'id': 'test', 'name': 'Test', 'workspace': str(self.folder), 'source_roots': []}
-        self.server = BoardServer(('127.0.0.1', 0), self.store, project, harness=True)
+        self.server = BoardServer(('127.0.0.1', 0), self.store, project)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
+        self.addCleanup(self.thread.join)
+        self.addCleanup(self.server.server_close)
+        self.addCleanup(self.server.shutdown)
 
-    def tearDown(self):
-        self.server.shutdown()
-        self.server.server_close()
-        self.thread.join()
-        self.directory.cleanup()
-
-    def schema(self):
-        with self.store.connect() as db:
-            return [tuple(row) for row in db.execute('SELECT type, name, sql FROM sqlite_master ORDER BY type, name')]
-
-    def test_core_rejects_organization_demo_api_and_assets(self):
-        self.server.harness = False
-        before = self.schema()
-        for path in ('/api/organization', '/api/demo-days', '/api/workforce',
-                     '/organization.js', '/office.js', '/office.css', '/office-demo-stage.png',
-                     '/office-art.js', '/office-scene.js', '/office-atlas.png', '/office-room.png',
-                     '/office-avatar-0.png', '/office-avatar-11.png'):
+    def test_empty_history_and_removed_execution_routes_preserve_db(self):
+        before = self.store.path.read_bytes()
+        status, body, _ = self.request('GET', '/api/executions')
+        self.assertEqual((status, json.loads(body)), (200, {'items': [], 'total': 0, 'has_more': False}))
+        self.assertEqual(self.request('GET', '/api/executions/GOAL-MISSING')[0], 404)
+        self.assertEqual(self.request('GET', '/api/executions?limit=101')[0], 400)
+        for path in ('/team', '/goals', '/goals.js', '/workforce.html', '/office.js', '/api/goals',
+                     '/api/orchestration', '/api/workforce', '/api/organization', '/api/demo-days',
+                     '/api/session-office', '/api/team/settings'):
             with self.subTest(path=path):
                 self.assertEqual(self.request('GET', path)[0], 404)
-        for path in ('/api/organization/teams', '/api/organization/teams/default',
-                     '/api/demo-days', '/api/demo-days/DEMO-TEST/respond'):
+        for path in ('/api/organization/teams', '/api/demo-days', '/api/orchestration/enable',
+                     '/api/session-office/start', '/api/goals/draft', '/api/executions'):
             with self.subTest(path=path):
                 self.assertEqual(self.request('POST', path, {})[0], 404)
-        self.assertEqual(self.schema(), before)
+        self.assertEqual(self.store.path.read_bytes(), before)
 
-    def test_read_only_harness_reads_empty_state_and_rejects_mutations_without_migration(self):
-        before = self.schema()
-        status, body, _ = self.request('GET', '/api/organization')
+    def test_legacy_history_preserves_status_checkout_usage_and_details(self):
+        task_id = self.store.write({'title': '기존 티켓'})['task']['id']
+        goal_id, run_id, office_id = 'GOAL-OLD', 'EXEC-OLD', 'aabbccddee00:stored-session'
+        old, new = '2026-01-01T00:00:00+00:00', '2026-02-01T00:00:00+00:00'
+        with self.store.connect() as db:
+            db.executescript("""
+                CREATE TABLE goals (id TEXT PRIMARY KEY, task_id TEXT, version INTEGER, data TEXT, created_at TEXT, updated_at TEXT);
+                CREATE TABLE executions (id TEXT PRIMARY KEY, goal_id TEXT, task_id TEXT, data TEXT, created_at TEXT, updated_at TEXT);
+                CREATE TABLE office_executions (id TEXT PRIMARY KEY, data TEXT, updated_at TEXT);
+                CREATE TABLE office_sessions (workspace TEXT, id TEXT, version INTEGER, team_id TEXT, role_id TEXT, updated_at TEXT, PRIMARY KEY(workspace,id));
+            """)
+            goal = {'title': '기존 목표', 'workspace': str(self.folder), 'status': 'done',
+                    'verification_results': [{'status': 'succeeded', 'exit_code': 0, 'argv': ['secret-command']}]}
+            run = {'status': 'failed', 'role': 'review', 'tokens': 42, 'model': 'example',
+                   'review_summary': '저장된 요약', 'prompt': 'secret-prompt', 'exit_code': 2}
+            db.execute('INSERT INTO goals VALUES (?,?,?,?,?,?)', (goal_id, task_id, 1, json.dumps(goal), old, old))
+            db.execute('INSERT INTO executions VALUES (?,?,?,?,?,?)', (run_id, goal_id, task_id, json.dumps(run), old, new))
+            db.execute('INSERT INTO office_executions VALUES (?,?,?)', (office_id, '{"status":"completed","process_group":42}', new))
+            db.execute('INSERT INTO office_sessions VALUES (?,?,?,?,?,?)', (str(self.folder), office_id, 1, None, 'read', new))
+        before = self.store.path.read_bytes()
+
+        status, body, _ = self.request('GET', '/api/executions?limit=1')
+        data = json.loads(body)
         self.assertEqual(status, 200)
-        organization = json.loads(body)
-        self.assertEqual(organization['version'], 0)
-        self.assertEqual(list(organization['teams']), ['default'])
-        status, body, _ = self.request('GET', '/api/demo-days')
-        self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), {'demos': []})
-        for path in ('/api/workforce', '/api/workforce?team=default'):
-            with self.subTest(path=path):
-                status, body, _ = self.request('GET', path)
-                self.assertEqual(status, 200)
-                office = json.loads(body)
-                self.assertEqual(office['goals'], [])
-                self.assertEqual(office['office']['jobs'], [])
-                self.assertFalse(office['execution_enabled'])
-        self.assertEqual(self.request('GET', '/api/workforce?team=TEAM-MISSING')[0], 400)
-        for path in ('/api/organization/teams', '/api/organization/teams/default',
-                     '/api/demo-days', '/api/demo-days/DEMO-TEST/respond'):
-            with self.subTest(path=path):
-                status, body, _ = self.request('POST', path, {})
-                self.assertEqual(status, 403)
-                self.assertIn('error', json.loads(body))
-        for path in ('/organization.js', '/office-demo-stage.png'):
-            with self.subTest(path=path):
-                self.assertEqual(self.request('GET', path)[0], 200)
-        self.assertEqual(self.schema(), before)
+        self.assertEqual((data['total'], data['has_more']), (3, True))
+        self.assertEqual([item['id'] for item in data['items']], [run_id])
+        data = json.loads(self.request('GET', '/api/executions?offset=1')[1])
+        self.assertEqual([item['id'] for item in data['items']], [office_id, goal_id])
+        self.assertFalse(data['has_more'])
+
+        for execution_id, kind, expected in (
+            (goal_id, 'goal', {'verification_results': [{'status': 'succeeded', 'exit_code': 0}], 'created_at': old}),
+            (run_id, 'role', {'summary': '저장된 요약', 'tokens': 42, 'model': 'example', 'exit_code': 2, 'created_at': old}),
+            (office_id, 'session', {}),
+        ):
+            status, body, _ = self.request('GET', '/api/executions/' + quote(execution_id, safe=''))
+            data = json.loads(body)
+            self.assertEqual(status, 200)
+            self.assertEqual((data['item']['id'], data['item']['kind'], data['item']['workspace']),
+                             (execution_id, kind, str(self.folder)))
+            self.assertEqual(data['details'], expected)
+        self.assertEqual(json.loads(self.request('GET', '/api/usage')[1])['summary']['total_tokens'], 42)
+        self.assertEqual(self.store.path.read_bytes(), before)
 
 
 if __name__ == "__main__":

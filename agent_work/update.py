@@ -15,7 +15,7 @@ import tarfile
 import tempfile
 import urllib.error
 import urllib.request
-from .installation import package_version, runtime, launcher, inventory, register, activate, LEGACY_SKILL_SHA256
+from .installation import package_version, runtime, launcher, inventory, activate
 from .project_lifecycle import access, idle, state
 from .store import BoardError
 
@@ -84,75 +84,66 @@ def _targets(data):
             if (Path(row['workspace'])/'.tack-orchestration/install.json').is_file():entries.setdefault(row['workspace'],dict(row))
     return sorted(entries.values(),key=lambda p:p['workspace'])
 
-def _migrate_legacy_runtime(db, db_path, backups):
-    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    changes = []
-    for table in ('team_settings', 'goals'):
-        if table not in tables:
-            continue
-        for key, raw in db.execute(f"SELECT id,data FROM {table} WHERE data LIKE ?", ('%herdr-codex-exec%',)):
-            data = json.loads(raw)
-            settings = data if table == 'team_settings' else data.get('execution_settings')
-            if isinstance(settings, dict) and settings.get('runtime') == 'herdr-codex-exec':
-                settings['runtime'] = 'codex-exec'
-                changes.append((table, key, json.dumps(data, ensure_ascii=False)))
+def _retire_project_launcher(entry, data):
+    from .setup import ORCHESTRATION_SKILL_HASHES
+
+    root = Path(entry['workspace'])
+    result = {'workspace': str(root), 'status': 'current', 'backups': []}
+    if not root.is_dir():
+        return {**result, 'status': 'skipped', 'reason': '기존 프로젝트 폴더가 없습니다.'}
+    marker = root/'.tack-orchestration/install.json'
+    binary = root/'.tack-orchestration/bin/tack-orchestration'
+    if not marker.is_file():
+        return {**result, 'status': 'skipped', 'reason': '기존 오케스트레이션 설치 정보가 없습니다.'}
+    if (binary.is_symlink() or binary.parent.is_symlink() or root.resolve() != root
+            or marker.resolve() != marker or binary.resolve() != binary):
+        raise BoardError('심볼릭 링크가 포함된 프로젝트 설치 경로는 보존합니다.', 409)
+    project_id = entry['project_id']
+    installed = json.loads(marker.read_text())
+    if (not isinstance(installed, dict) or installed.get('format') != 1 or installed.get('workspace') != str(root)
+            or installed.get('project_id') != project_id or Path(project_id).name != project_id or project_id in {'.', '..'}):
+        raise BoardError('프로젝트 설치 ID와 경로를 확인해주세요.')
+    if binary.exists():
+        legacy_runtime = installed.get('runtime')
+        if not binary.is_file() or not isinstance(legacy_runtime, str):
+            raise BoardError('사용자가 변경한 프로젝트 실행기를 보존합니다.', 409)
+        shebang, _, command = binary.read_text().partition('\n')
+        # Match the old generated launcher exactly except for its Python path.
+        expected = (f'import sys,os\nsys.path.insert(0,{legacy_runtime!r})\n'
+                    f'os.environ["TACK_HARNESS_WORKSPACE"]={str(root)!r}\n'
+                    'from agent_work.harness_cli import main\nmain()\n')
+        if not shebang.startswith('#!/') or command != expected:
+            raise BoardError('사용자가 변경한 프로젝트 실행기를 보존합니다.', 409)
+    skill = root/'.agents/skills/tack-orchestration/SKILL.md'
+    changes = [(binary, None, False)] if binary.is_file() else []
+    if skill.is_file() and skill.resolve() == skill:
+        digest = hashlib.sha256(skill.read_bytes()).hexdigest()
+        if digest in ORCHESTRATION_SKILL_HASHES or digest == installed.get('skill_sha256'):
+            changes.append((skill, None, False))
     if not changes:
-        return 0
+        return result
+    db_path = Path(entry['db_path'])
+    if db_path.resolve() != db_path or db_path.parent not in {data/'projects'/project_id, root/'.agent-work'}:
+        raise BoardError('프로젝트 관리 DB 경로가 아닙니다.')
+    if not db_path.is_file():
+        raise BoardError('프로젝트 DB가 없습니다.')
+    with access(db_path, exclusive=True, create=False), closing(sqlite3.connect(db_path.as_uri()+'?mode=ro', uri=True)) as db:
+        if state(db)['status'] == 'deleted':
+            return {**result, 'status': 'skipped', 'reason': '삭제한 프로젝트입니다.'}
+        idle(db, include_sessions=False)
+        activate(changes, result['backups'])
+    return {**result, 'status': 'retired'}
 
-    folder = db_path.parent / 'backups'
-    folder.mkdir(exist_ok=True)
-    fd, backup = tempfile.mkstemp(prefix='runtime-migration-', suffix='.sqlite3', dir=folder)
-    os.close(fd)
-    with closing(sqlite3.connect(backup)) as target:
-        db.backup(target)
-    backups.append(backup)
-    db.execute('BEGIN IMMEDIATE')
-    for table, key, data in changes:
-        db.execute(f'UPDATE {table} SET data=?,version=version+1 WHERE id=?', (data, key))
-    return len(changes)
-
-
-def _harness(source,entry,data):
-    root=Path(entry['workspace']).resolve();marker=root/'.tack-orchestration/install.json'
-    if not root.is_dir() or not marker.is_file():return {'workspace':str(root),'status':'skipped','reason':'설치 폴더가 없거나 하네스가 설치되지 않았습니다.'}
-    installed=json.loads(marker.read_text())
-    if installed.get('format')!=1 or installed.get('workspace')!=str(root) or installed.get('project_id')!=entry['project_id']:raise BoardError('하네스 설치 ID/작업 폴더가 변경됐습니다.')
-    db_path=Path(entry['db_path']).resolve()
-    if db_path.parent not in {(data/'projects'/entry['project_id']).resolve(),(root/'.agent-work').resolve()}:raise BoardError('프로젝트 관리 DB 경로가 아닙니다.')
-    if not db_path.is_file():raise BoardError('프로젝트 DB가 없습니다.')
-    if not marker.resolve().is_relative_to(root):raise BoardError('프로젝트 밖 설치 설정은 변경하지 않습니다.')
-    with access(db_path,exclusive=True),closing(sqlite3.connect(db_path.as_uri()+'?mode=rw',uri=True)) as db, db:
-        status=state(db)['status']
-        if status=='deleted':return {'workspace':str(root),'status':'skipped','reason':'삭제한 프로젝트입니다.'}
-        try:idle(db)
-        except BoardError as error:return {'workspace':str(root),'status':'skipped','reason':str(error)}
-        binary=root/'.tack-orchestration/bin/tack-orchestration'
-        if not binary.resolve().is_relative_to(root):raise BoardError('프로젝트 밖 실행기는 변경하지 않습니다.')
-        if not binary.is_file() or 'from agent_work.harness_cli import main' not in binary.read_text():raise BoardError('사용자가 변경한 하네스 실행기를 보존합니다.')
-        target=root/'.agents/skills/tack-orchestration/SKILL.md'
-        stock=(source/'templates/tack-orchestration.md').read_bytes();stock_hash=hashlib.sha256(stock).hexdigest()
-        previous=installed.get('skill_sha256') or LEGACY_SKILL_SHA256
-        current=hashlib.sha256(target.read_bytes()).hexdigest() if target.exists() else None
-        custom=(current is not None and current not in {previous,stock_hash}) or not target.resolve().is_relative_to(root)
-        new_runtime=runtime(source,root/'.tack-orchestration/releases')
-        backups=[];command=launcher(new_runtime,root);changed=binary.read_text()!=command
-        updated={**installed,'runtime':str(new_runtime),'version':package_version(source),'data':str(db_path)}
-        if not custom:updated['skill_sha256']=stock_hash
-        register(data,{'workspace':str(root),'id':entry['project_id'],'db_path':str(db_path)},backups)
-        changes=[] if custom else [(target,stock.decode(),False)]
-        changes.extend([(marker,json.dumps(updated,indent=2)+'\n',False),(binary,command,True)])
-        migrated=_migrate_legacy_runtime(db,db_path,backups) if status=='active' else 0
-        activate(changes,backups)
-        return {'workspace':str(root),'version':updated['version'],'runtime':str(new_runtime),'status':'updated' if changed or migrated else 'current','skill':'preserved_custom' if custom else 'managed','backups':backups,**({'migrated_runtime_records':migrated} if migrated else {})}
 
 def managed_instructions(source, home, environ, installed):
-    from .setup import block, codex_homes, LEGACY_SKILL_HASHES, BEGIN, END
+    from .setup import block, codex_homes, retired_global_skills, LEGACY_SKILL_HASHES, BEGIN, END
     policy=(source/'templates/work-policy.md').read_text()
     skill=(source/'templates/handoff-state.md').read_text()
     known_policies={'9898a6e5b6d13b1bc69f62c7cde6e407f813d6c59bdcb2786ea002ccfbe34177',installed.get('policy_sha256'),hashlib.sha256(policy.strip().encode()).hexdigest()}
     known_skills=LEGACY_SKILL_HASHES | {installed.get('handoff_state_sha256'),hashlib.sha256(skill.encode()).hexdigest()}
     changes=[];reports=[]
-    for codex in codex_homes(home,environ):
+    homes=codex_homes(home,environ)
+    for codex in homes:
         agents=codex/'AGENTS.md'
         if agents.is_file():
             original=agents.read_text()
@@ -165,6 +156,9 @@ def managed_instructions(source, home, environ, installed):
             managed=hashlib.sha256(target.read_bytes()).hexdigest() in known_skills
             if managed:changes.append((target,skill,False))
             reports.append({'path':str(target),'status':'managed' if managed else 'preserved_custom'})
+    for target in retired_global_skills(homes):
+        changes.append((target,None,False))
+        reports.append({'path':str(target),'status':'retired'})
     return changes,reports,{'policy_sha256':hashlib.sha256(policy.strip().encode()).hexdigest(),'handoff_state_sha256':hashlib.sha256(skill.encode()).hexdigest()}
 
 
@@ -178,30 +172,38 @@ def apply_update(source,home,environ):
     old_version=installed.get('version')
     if old_version and tuple(map(int,version.split('.')))<tuple(map(int,old_version.split('.'))):
         return {'version':old_version,'status':'newer_installed','available_version':version,'projects':[],'errors':[],'note':'설치본이 배포본보다 최신입니다. main/Release 반영 전에는 로컬 소스를 사용하세요.'}
+    if any((source/'agent_work'/name).exists() for name in ('harness_cli.py','orchestration.py')):
+        raise BoardError('이 배포본에는 이전 오케스트레이션 실행기가 포함되어 있습니다. Tack Core 설치본을 유지합니다.',409)
     init=(source/'agent_work/__init__.py').read_text()
     if not (source/'agent_work/update.py').is_file() or not re.search(r'__version__\s*=\s*[\"\x27]'+re.escape(version)+r'[\"\x27]',init):raise BoardError('이 배포본은 통합 업데이트를 지원하지 않거나 버전이 일치하지 않습니다.')
-    if not (source/'templates/tack-orchestration.md').is_file():raise BoardError('프로젝트 스킬이 없는 배포본입니다.')
     data=Path(environ.get('AGENT_WORK_HOME',str(home/'.local/share/agent-work'))).expanduser().resolve()
     folder=home/'.local/lib/tack';folder.mkdir(parents=True,exist_ok=True)
     with (folder/'.update.lock').open('a+b') as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise BoardError('다른 tack update가 실행 중입니다.',409)
-        entries=_targets(data);new_runtime=runtime(source,folder/'releases',core=True)
-        projects=[];errors=[]
-        for entry in entries:
-            try:projects.append(_harness(source,entry,data))
-            except (BoardError,OSError,ValueError,sqlite3.Error) as error:
-                skipped=isinstance(error,BoardError) and error.status==409
-                item={'workspace':entry['workspace'],'status':'skipped' if skipped else 'failed','reason':str(error)};projects.append(item)
-                if not skipped:errors.append(item)
+        new_runtime=runtime(source,folder/'releases')
         backups=[];command=launcher(new_runtime);changed=binary.read_text()!=command
         changes,instructions,instruction_hashes=managed_instructions(source,home,environ,installed)
         legacy=home/'.local/bin/work'
         if legacy.is_file() and 'from agent_work.cli import main' in legacy.read_text():changes.append((legacy,command,True))
         changes.extend([(metadata,json.dumps({'format':1,'version':version,'runtime':str(new_runtime),**instruction_hashes},indent=2)+'\n',False),(binary,command,True)])
         activate(changes,backups)
+        projects=[];errors=[]
+        try:
+            entries=_targets(data)
+        except (BoardError,OSError,ValueError,sqlite3.Error) as error:
+            entries=[]
+            errors.append({'status':'failed','reason':str(error)})
+        for entry in entries:
+            try:
+                projects.append(_retire_project_launcher(entry,data))
+            except (BoardError,OSError,ValueError,sqlite3.Error) as error:
+                skipped=isinstance(error,BoardError) and error.status==409
+                item={'workspace':entry['workspace'],'status':'skipped' if skipped else 'failed','reason':str(error)}
+                projects.append(item)
+                if not skipped:errors.append(item)
         return {'version':version,'previous_version':old_version,'status':'updated' if changed else 'current','runtime':str(new_runtime),'backups':backups,'projects':projects,'errors':errors,'instructions':instructions,
-                'note':'관리 중인 Tack 지침·스킬을 갱신했습니다. 사용자 수정본은 instructions에서 확인하세요. 초기 setup·권한·Hook·셸 설정은 재실행하지 않습니다. 실행 중인 Dashboard는 기존 버전을 사용하므로 종료 후 다시 실행하세요. 건너뛴 프로젝트는 종료 후 tack update를 다시 실행하세요.'}
+                'note':'Tack Core를 적용했습니다. 작업 DB와 기존 실행 이력을 보존했습니다. 이전 실행기·스킬의 백업과 건너뛴 프로젝트는 projects에서 확인할 수 있습니다. 대시보드에 적용하려면 종료 후 다시 시작하세요.'}
 
 def update(source=None):
     if source is not None:return apply_update(source,Path.home(),os.environ)

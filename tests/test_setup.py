@@ -143,6 +143,15 @@ class SetupTests(unittest.TestCase):
         self.assertEqual(legacy.read_text(), 'someone else owns this')
         self.assertTrue(Path(result['launcher']).is_file())
 
+    def test_fresh_install_provides_only_core_commands(self):
+        result = setup(SOURCE, self.home, self.env)
+        package = json.loads((SOURCE/'package.json').read_text())
+        self.assertEqual(package['bin'], {'tack': 'bin/tack.cjs'})
+        self.assertFalse((Path(result['runtime'])/'agent_work/harness_cli.py').exists())
+        help_text = subprocess.check_output([result['launcher'], '--help'], text=True)
+        self.assertIn('dashboard', help_text)
+        self.assertNotRegex(help_text, r'\b(?:goal|team|settings)\b')
+
     def test_legacy_managed_policy_marker_is_upgraded_once(self):
         old = '# Before\n<!-- agent-work:begin -->\nold rules\n<!-- agent-work:end -->\n# After\n'
         result = block(old, 'new Tack policy')

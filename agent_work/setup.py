@@ -14,6 +14,12 @@ BEGIN = '<!-- tack:begin -->'
 END = '<!-- tack:end -->'
 LEGACY_SKILL_SHA256 = '3237b617c3d5e84221ba32e7139b130b8f98b143fc09a9f24a9a117982bd0d8f'
 LEGACY_SKILL_HASHES = {'d8f9219ff5882cdacd1c650b9f185d2513dee88e102fd1d7ff2a9d5d54492c0d', LEGACY_SKILL_SHA256, 'dc48eea68390a248cee2ddbaedb66b06f89db7016284662e45fecd723f4a1214'}
+ORCHESTRATION_SKILL_HASHES = {
+    '1217aed5a2eca74ee4eafd0cd3e875b7b3506655edc5b60533770b90ae2d583b',
+    '70ce1ecd891b3812f932a311ba2fee663c371b344caace1065644c3926abb104',
+    '757e98d16e692f9aa6c72addc9312edae042a548ec7e53dafd8a5a3ee5fd880b',
+    'db2ba8d5a8b5b196bd3e126528f6d14a0a18855a01343b1c25c1cce8bb69663f',
+}
 
 
 def block(original, content):
@@ -64,12 +70,18 @@ def config_content(original, data_root):
 def replace(path, content, backups):
     if path.is_symlink():
         path = path.resolve()
-    if path.exists() and path.read_text() == content:
+    if content is None and not path.exists():
+        return
+    if content is not None and path.exists() and path.read_text() == content:
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     mode = path.stat().st_mode & 0o777 if path.exists() else 0o600
     if path.exists():
         backup = path.with_name(path.name + '.agent-work-' + datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f') + '.bak')
+        if content is None:
+            path.rename(backup)
+            backups.append(str(backup))
+            return
         shutil.copy2(path, backup)
         backups.append(str(backup))
     fd, temporary = tempfile.mkstemp(prefix='.agent-work-', dir=path.parent)
@@ -93,6 +105,13 @@ def codex_homes(home, environ):
     return homes
 
 
+def retired_global_skills(homes):
+    for codex in homes:
+        path = codex/'skills/tack-orchestration/SKILL.md'
+        if path.is_file() and path.resolve() == path and hashlib.sha256(path.read_bytes()).hexdigest() in ORCHESTRATION_SKILL_HASHES:
+            yield path
+
+
 def setup(source, home, environ):
     source, home = Path(source), Path(home)
     data = Path(environ.get('AGENT_WORK_HOME', str(home / '.local/share/agent-work'))).expanduser().resolve()
@@ -111,15 +130,10 @@ def setup(source, home, environ):
             raise ValueError(f'기존 handoff-state 스킬이 다릅니다. 보존을 위해 설치 중단: {target}')
         plan.append((target, skill))
     from .hook_setup import merge_hooks
-    removals=[]
-    stock_skills={'1217aed5a2eca74ee4eafd0cd3e875b7b3506655edc5b60533770b90ae2d583b','70ce1ecd891b3812f932a311ba2fee663c371b344caace1065644c3926abb104','757e98d16e692f9aa6c72addc9312edae042a548ec7e53dafd8a5a3ee5fd880b'}
     for codex in homes:
         hooks=codex/'hooks.json'
         plan.append((hooks,merge_hooks(hooks.read_text() if hooks.exists() else '',home/'.local/bin/tack')))
-        target=codex/'skills/tack-orchestration/SKILL.md'
-        if target.exists():
-            if hashlib.sha256(target.read_bytes()).hexdigest() not in stock_skills:raise ValueError(f'사용자가 수정한 전역 오케스트레이션 스킬을 보존합니다: {target}')
-            removals.append(target.resolve())
+    plan.extend((target,None) for target in retired_global_skills(homes))
     launcher = home / '.local/bin/tack'
     if launcher.exists() and 'from agent_work.cli import main' not in launcher.read_text():
         raise ValueError(f'다른 tack 명령을 덮어쓰지 않습니다: {launcher}')
@@ -135,7 +149,7 @@ def setup(source, home, environ):
         line = 'export PATH="$HOME/.local/bin:$PATH"'
         plan.append((rc, raw if line in raw else raw.rstrip() + '\n\n# Tack\n' + line + '\n'))
     from .installation import runtime as stage_runtime, launcher as runtime_launcher, package_version
-    runtime=stage_runtime(source,home/'.local/lib/tack/releases',core=True)
+    runtime=stage_runtime(source,home/'.local/lib/tack/releases')
     backups = []
     # Probe the actual data directory, preserving all existing DBs and records.
     data.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -143,9 +157,6 @@ def setup(source, home, environ):
     os.close(fd); Path(probe).unlink()
     for path, content in plan:
         replace(path, content, backups)
-    for target in sorted(set(removals)):
-        backup=target.with_name(target.name+'.agent-work-'+datetime.datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.bak')
-        target.rename(backup);backups.append(str(backup))
     command=runtime_launcher(runtime)
     replace(launcher, command, backups)
     launcher.chmod(0o755)

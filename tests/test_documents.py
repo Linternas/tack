@@ -6,7 +6,7 @@ import tempfile
 import threading
 import unittest
 from agent_work.store import Store,BoardError
-from agent_work.documents import source_document,render_document
+from agent_work.documents import source_document,render_document,source_format
 from agent_work.http import BoardServer
 
 class DocumentTests(unittest.TestCase):
@@ -47,18 +47,44 @@ class DocumentTests(unittest.TestCase):
     def test_http_reads_archived_sources_after_original_deletion(self):
         source=self.root/'docs/old.md';source.write_text('# HTTP <b>escaped</b>')
         doc=self.store.archive_document(source);source.unlink()
+        html_source=self.root/'docs/design.HTM'
+        html_body=b'<style>h1{color:blue}</style><h1>Design</h1><script>window.bad()</script>'
+        html_source.write_bytes(html_body)
+        html_doc=self.store.archive_document(html_source)
+        (self.root/'other.html').write_text('<h1>outside root</h1>')
         server=BoardServer(('127.0.0.1',0),self.store,self.project)
         thread=threading.Thread(target=server.serve_forever,daemon=True);thread.start()
         def get(path):
             c=http.client.HTTPConnection('127.0.0.1',server.server_port)
-            c.request('GET',path);r=c.getresponse();result=r.status,r.read();c.close();return result
+            c.request('GET',path);r=c.getresponse();result=r.status,r.read(),r.headers;c.close();return result
         try:
             self.assertEqual(get('/api/source?path=docs/old.md')[0],200)
-            self.assertEqual(json.loads(get('/api/source?path=archive:'+doc['id'])[1])['text'],doc['text'])
-            status,body=get('/documents/'+doc['id']);self.assertEqual(status,200);self.assertIn(b'&lt;b&gt;',body)
-            self.assertEqual(len(json.loads(get('/api/documents')[1])['documents']),1)
+            md_key='archive:'+doc['id']
+            self.assertEqual(json.loads(get('/api/source?path='+md_key)[1]),
+                             {'path':md_key,'text':doc['text'],'format':'markdown'})
+            status,body,_=get('/documents/'+doc['id']);self.assertEqual(status,200);self.assertIn(b'&lt;b&gt;',body)
+            self.assertEqual(len(json.loads(get('/api/documents')[1])['documents']),2)
             self.assertEqual(get('/documents')[0],200)
             self.assertEqual(get('/api/source?path=../../etc/passwd')[0],404)
+            html_key='docs/design.HTM'
+            self.assertEqual(json.loads(get('/api/source?path='+html_key)[1]),
+                             {'path':html_key,'text':html_body.decode(),'format':'html'})
+            self.assertIn(b'&lt;h1&gt;Design&lt;/h1&gt;',get('/source?path='+html_key)[1])
+            status,body,headers=get('/source?path='+html_key+'&preview=1')
+            self.assertEqual((status,body),(200,html_body))
+            self.assertEqual(headers['Content-Type'],'text/html; charset=utf-8')
+            policy=headers['Content-Security-Policy'].split('; ')
+            for directive in ('sandbox', "default-src 'none'", "style-src 'unsafe-inline'", "frame-ancestors 'self'",
+                              "form-action 'none'", "base-uri 'none'"):
+                self.assertIn(directive,policy)
+            self.assertFalse(any(directive.startswith('script-src') for directive in policy))
+            self.assertEqual(headers['Referrer-Policy'],'no-referrer')
+            self.assertEqual(headers['X-Content-Type-Options'],'nosniff')
+            html_source.unlink()
+            self.assertEqual(get('/source?path=archive:'+html_doc['id']+'&preview=1')[:2],(200,html_body))
+            self.assertEqual(get('/source?path='+md_key+'&preview=1')[0],415)
+            self.assertEqual(get('/source?path=other.html&preview=1')[0],404)
+            self.assertEqual(get('/source?path=../outside.html&preview=1')[0],404)
         finally:server.shutdown();server.server_close();thread.join()
 
 if __name__=='__main__':unittest.main()
@@ -77,6 +103,18 @@ class ReferenceRewriteTests(unittest.TestCase):
 
 
 class ExtendedSourceTests(unittest.TestCase):
+    def test_source_formats_use_actual_and_archived_filenames(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder).resolve();(root/'docs').mkdir();store=Store(root/'test.sqlite3')
+            project={'id':'test','workspace':str(root),'source_roots':['docs']}
+            for filename,format_name in [('API.MARKDOWN','markdown'),('API.HTML','html'),('request.json','text')]:
+                with self.subTest(filename=filename):
+                    path=root/'docs'/filename;path.write_text('body')
+                    doc=store.archive_document(path)
+                    self.assertEqual(source_format(source_document(store,project,f'docs/{filename}')),format_name)
+                    path.unlink()
+                    self.assertEqual(source_format(source_document(store,project,'archive:'+doc['id'])),format_name)
+
     def test_html_sources_are_text_and_extensionless_files_need_explicit_permission(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder).resolve();(root/'docs').mkdir();store=Store(root/'test.sqlite3')
@@ -85,7 +123,12 @@ class ExtendedSourceTests(unittest.TestCase):
             project={'id':'test','workspace':str(root),'source_roots':['docs']}
             view=source_document(store,project,'docs/design.html')
             self.assertNotIn('<script>',render_document(store,project,view).decode())
-            with self.assertRaises(BoardError):source_document(store,project,'docs/api_contract')
+            with self.assertRaisesRegex(BoardError,'이 형식의'):
+                source_document(store,project,'docs/api_contract')
+            with self.assertRaisesRegex(BoardError,'허용된 근거 경로 밖'):
+                source_document(store,project,'other.html')
+            with self.assertRaisesRegex(BoardError,'근거 파일을 찾을 수 없습니다'):
+                source_document(store,project,'docs/missing.html')
             project['source_roots'].append('docs/api_contract')
             self.assertEqual(source_document(store,project,'docs/api_contract')['text'],'# API')
     def test_deleted_html_targets_are_rewritten_without_changing_other_assets(self):

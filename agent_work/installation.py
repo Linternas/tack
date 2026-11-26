@@ -1,6 +1,4 @@
 """Immutable runtimes and installation inventory, without initial configuration."""
-import ast
-import fcntl
 import hashlib
 import json
 import os
@@ -11,27 +9,14 @@ import sys
 import tempfile
 from .store import BoardError
 
-EXTENSION_MODULES={'session_office.py','organization.py','demo_day.py','harness.py','harness_cli.py','orchestration.py','orchestration_cli.py','team.py','crewset.py','usage_adapter.py','workforce.py','workspaces.py','scheduler.py','run_queue.py','collaboration.py','execution_policy.py','codex_app_server.py'}
-EXTENSION_ASSETS={'session-office.js','office-demo-stage.png','organization.js','office-atlas.png','office-avatar-0.png','office-avatar-1.png','office-avatar-3.png','office-avatar-2.png','office-avatar-6.png','office-avatar-7.png','office-avatar-5.png','office-avatar-4.png','office-avatar-9.png','office-avatar-8.png','office-room.png','office-avatar-11.png','office-avatar-10.png','office-art.js','office-scene.js','office.js','office.css','ai-office.LICENSE','goals.html','goals.js','goals.css','plan.schema.json','verdict.schema.json','brief.schema.json','crewset.roles.json','crewset.LICENSE','employee.schema.json','workforce.html','workforce.js','workforce.css'}
-LEGACY_SKILL_SHA256='db2ba8d5a8b5b196bd3e126528f6d14a0a18855a01343b1c25c1cce8bb69663f'
-
 def package_version(source):
     value=json.loads((Path(source)/'package.json').read_text()).get('version')
     if not isinstance(value,str) or not re.fullmatch(r'\d+\.\d+\.\d+',value):raise BoardError('배포본의 version은 major.minor.patch 형식이어야 합니다.')
     return value
 
-def runtime(source,releases,core=False):
+def runtime(source,releases):
     source=Path(source).resolve();releases=Path(releases)
-    excluded=set()
-    if core:
-        tree=ast.parse((source/'agent_work/installation.py').read_text())
-        for node in tree.body:
-            if isinstance(node,ast.Assign) and any(isinstance(target,ast.Name) and target.id in {'EXTENSION_MODULES','EXTENSION_ASSETS'} for target in node.targets):
-                values=ast.literal_eval(node.value)
-                if not isinstance(values,set) or any(not isinstance(v,str) or Path(v).name!=v for v in values):raise BoardError('배포본의 하네스 파일 목록을 확인해주세요.')
-                excluded.update(values)
-        if not {'orchestration.py','harness.py'}<=excluded:raise BoardError('배포본의 Core/하네스 분리 목록이 없습니다.')
-    files=sorted(p for p in (source/'agent_work').rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc' and (not core or p.name not in excluded))
+    files=sorted(p for p in (source/'agent_work').rglob('*') if p.is_file() and '__pycache__' not in p.parts and p.suffix!='.pyc')
     if not files or not (source/'agent_work/cli.py').is_file():raise BoardError('유효한 Tack 배포본이 아닙니다.')
     digest=hashlib.sha256()
     for p in files:
@@ -53,11 +38,8 @@ def runtime(source,releases,core=False):
         if staging.exists():shutil.rmtree(staging)
     return target
 
-def launcher(runtime,workspace=None):
-    command=f'#!{sys.executable}\nimport sys,os\nsys.path.insert(0,{str(runtime)!r})\n'
-    if workspace is not None:command+=f'os.environ["TACK_HARNESS_WORKSPACE"]={str(workspace)!r}\nfrom agent_work.harness_cli import main\n'
-    else:command+='from agent_work.cli import main\n'
-    return command+'main()\n'
+def launcher(runtime):
+    return f'#!{sys.executable}\nimport sys,os\nsys.path.insert(0,{str(runtime)!r})\nfrom agent_work.cli import main\nmain()\n'
 
 def inventory(data):
     path=Path(data)/'harnesses.json'
@@ -67,16 +49,6 @@ def inventory(data):
     for p in value['projects']:
         if not isinstance(p,dict) or set(p)!={'workspace','project_id','db_path'} or any(not isinstance(v,str) or not v for v in p.values()):raise BoardError('하네스 설치 목록 항목을 확인해주세요.')
     return value['projects']
-
-def register(data,project,backups):
-    from .setup import replace
-    data=Path(data);data.mkdir(parents=True,exist_ok=True,mode=0o700)
-    with (data/'.harnesses.lock').open('a+b') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX)
-        entries={p['workspace']:p for p in inventory(data)}
-        entry={'workspace':project['workspace'],'project_id':project['id'],'db_path':project['db_path']}
-        entries[entry['workspace']]=entry
-        replace(data/'harnesses.json',json.dumps({'format':1,'projects':sorted(entries.values(),key=lambda p:p['workspace'])},ensure_ascii=False,indent=2)+'\n',backups)
 
 def activate(changes,backups):
     from .setup import replace

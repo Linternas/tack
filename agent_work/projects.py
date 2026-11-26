@@ -224,11 +224,12 @@ def identity(workspace):
     root=Path(git_root).resolve() if git_root else next((folder for folder in (workspace,*workspace.parents) if (folder/'.agent-work/project.json').is_file()),workspace)
     if not git_root:
         for parent in workspace.parents:
+            if not workspace.is_relative_to(parent/'.tack-orchestration/workspaces'):continue
             marker=parent/'.tack-orchestration/install.json'
-            if not workspace.is_relative_to(parent/'.tack-orchestration/workspaces') or not marker.is_file():continue
-            try:installed=json.loads(marker.read_text())
-            except (OSError,ValueError):continue
-            if installed.get('format')==1 and installed.get('workspace')==str(parent):root=parent;break
+            if marker.is_file():
+                try:installed=json.loads(marker.read_text())
+                except (OSError,ValueError):installed={}
+                if installed.get('format')==1 and installed.get('workspace')==str(parent):root=parent;break
     common = git_value(root,'rev-parse','--path-format=absolute','--git-common-dir')
     return root, str(Path(common).resolve()) if common else str(root)
 
@@ -295,6 +296,37 @@ def local_project(root):
     from .project_lifecycle import read
     return {**read(root/'.agent-work'/filename),'id':data['id'],'name':data.get('name',root.name),'workspace':str(root),
             'db_path':str(root/'.agent-work'/data.get('db_file','work.sqlite3')),'source_roots':data.get('source_roots',[])}
+
+
+def registered_workspaces(project, workspace=None):
+    """List the live, canonical checkout roots registered to this project's store."""
+    if (Path(project['workspace'])/'.agent-work/project.json').is_file():
+        candidates = [project['workspace']]
+    else:
+        if not (home()/'registry.sqlite3').is_file():
+            return []
+        sql = 'SELECT workspace FROM projects WHERE id=? UNION SELECT path FROM aliases WHERE project_id=?'
+        values = (project['id'], project['id'])
+        if workspace is not None:
+            sql = f'SELECT workspace FROM ({sql}) WHERE workspace=?'
+            values += (workspace,)
+        with registry(readonly=True) as db:
+            candidates = [row[0] for row in db.execute(sql, values)]
+    workspaces = []
+    for candidate in candidates:
+        path = Path(candidate)
+        try:
+            if (workspace is not None and candidate != workspace or not path.is_absolute() or '.git' in path.parts
+                or not path.is_dir() or path.resolve() != path):
+                continue
+            resolved = resolve(path)
+            if (resolved['workspace'] == candidate and resolved['id'] == project['id']
+                and resolved['db_path'] == project['db_path']
+                and git_value(path, 'rev-parse', '--is-inside-git-dir') != 'true'):
+                workspaces.append(candidate)
+        except (BoardError, OSError, ValueError, sqlite3.Error):
+            continue
+    return sorted(workspaces)
 
 
 def resolve(workspace, create=False, local=False, name=None, link=None, source_roots=None):

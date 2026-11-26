@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Tack · 개발 대시보드</title>
-  <link rel="icon" href="data:,">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any">
   <link rel="stylesheet" href="/dashboard.css">
   <script src="/common.js" defer></script>
   <script src="/dashboard.js" defer></script>
@@ -84,7 +84,7 @@
       </div><footer class="dialog-footer"><span>실제 결과와 완료 이력을 함께 저장합니다.</span><button type="button" class="button secondary" id="cancel-qa-completion">취소</button><button type="submit" class="button primary" id="save-qa-completion">완료 저장</button></footer>
     </form>
   </dialog>
-  <dialog id="source-dialog" aria-labelledby="source-title"><header class="dialog-header"><h2 id="source-title">근거 문서</h2><button class="icon-button" id="close-source" aria-label="문서 닫기">×</button></header><pre id="source-text"></pre></dialog>
+  <dialog id="source-dialog" aria-labelledby="source-title"><header class="dialog-header"><h2 id="source-title">근거 문서</h2><button class="icon-button" id="close-source" aria-label="문서 닫기">×</button></header><div id="source-body" aria-busy="false"></div></dialog>
   <div id="toast" class="toast" role="status" hidden></div>
 </body>
 </html>
