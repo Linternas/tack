@@ -371,6 +371,86 @@ test('drawer copies only the open ticket ID and reports clipboard failure', asyn
   assert.equal(ui.$('copy-detail-status').textContent, '복사 실패');
 });
 
+test('ticket evidence renders Markdown and safely opens archived HTML in the selected project', async (t) => {
+  const ui = await setup(t);
+  ui.records[0].sources = [
+    {label: '기획안', path: 'docs/기획안.md'},
+    {label: 'HTML 검토', path: 'archive:DOC-123'},
+    {label: '원문', path: 'docs/generated.txt'},
+    {label: '미등록 파일', path: 'private/unsupported.md'},
+    {label: '관련 티켓', url: 'https://example.com/ticket'},
+  ];
+  const markdown = [
+    '# 검토 사항', '', '**원문** <img src=x onerror=bad()> [위험 링크](javascript:bad())', '',
+    '- 첫 번째', '- 두 번째', '', '| 항목 | 값 |', '| --- | --- |', '| 결과 | `통과` |', '',
+    '```html', '<script>bad()</script>', '```', '', '[외부 문서](https://example.com/docs)',
+  ].join('\n');
+  const fetch = ui.window.fetch;
+  ui.window.workUrl = path => path.includes('/source?') ? path + '&project=test-project' : path;
+  ui.window.fetch = (url, options) => {
+    if (!url.startsWith('/api/source?')) return fetch(url, options);
+    const params = new URL(url, ui.window.location.origin).searchParams;
+    assert.equal(params.get('project'), 'test-project');
+    const sources = {
+      'docs/기획안.md': {format: 'markdown', text: markdown},
+      'archive:DOC-123': {format: 'html', text: '<script>bad()</script><h1>검토</h1>'},
+      'docs/generated.txt': {format: 'text', text: '<strong>평문</strong>'},
+    };
+    const data = sources[params.get('path')];
+    return Promise.resolve({ok: Boolean(data), json: async () => data ?? {error: '이 근거 파일은 열 수 없습니다.'}});
+  };
+  await ui.click('[data-open="ISSUE-001"]');
+  await ui.click('[data-source-index="0"]');
+  const body = ui.$('source-body');
+  assert.equal(body.querySelector('h1').textContent, '검토 사항');
+  assert.equal(body.querySelector('strong').textContent, '원문');
+  assert.deepEqual([...body.querySelectorAll('li')].map(item => item.textContent), ['첫 번째', '두 번째']);
+  assert.equal(body.querySelector('td code').textContent, '통과');
+  assert.equal(body.querySelector('pre code').textContent, '<script>bad()</script>');
+  assert.equal(body.querySelector('img, script, a[href^="javascript:"]'), null);
+  assert.equal(body.querySelector('a').href, 'https://example.com/docs');
+  assert.match(body.textContent, /<img src=x onerror=bad\(\)>/);
+
+  await ui.click('#close-source');
+  await ui.click('[data-source-index="1"]');
+  const frame = body.querySelector('iframe');
+  assert.equal(frame.getAttribute('sandbox'), '');
+  assert.equal(frame.getAttribute('referrerpolicy'), 'no-referrer');
+  assert.equal(frame.getAttribute('src'), '/source?path=archive%3ADOC-123&preview=1&project=test-project');
+  assert.equal(body.querySelector('h1, script'), null);
+  await ui.click('#close-source');
+  assert.equal(body.querySelector('iframe'), null);
+  await ui.click('[data-source-index="2"]');
+  assert.equal(body.querySelector('pre').textContent, '<strong>평문</strong>');
+  await ui.click('#close-source');
+  await ui.click('[data-source-index="3"]');
+  assert.equal(body.textContent, '이 근거 파일은 열 수 없습니다.');
+  assert.equal(ui.document.querySelector('.source-list a').getAttribute('target'), '_blank');
+});
+
+test('closing one source prevents its late response from replacing the next preview', async (t) => {
+  const ui = await setup(t);
+  ui.records[0].sources = [
+    {label: '이전 문서', path: 'docs/old.md'},
+    {label: '다음 문서', path: 'docs/next.md'},
+  ];
+  let finish;
+  const fetch = ui.window.fetch;
+  ui.window.fetch = (url, options) => {
+    if (url === '/api/source?path=docs%2Fold.md') return new Promise(resolve => { finish = resolve; });
+    if (url === '/api/source?path=docs%2Fnext.md') return Promise.resolve({ok: true, json: async () => ({format: 'markdown', text: '# 다음 문서'})});
+    return fetch(url, options);
+  };
+  await ui.click('[data-open="ISSUE-001"]');
+  await ui.click('[data-source-index="0"]');
+  assert.equal(ui.$('source-body').getAttribute('aria-busy'), 'true');
+  await ui.click('#close-source');
+  await ui.click('[data-source-index="1"]');
+  finish({ok: true, json: async () => ({format: 'markdown', text: '# 이전 문서'})});
+  await tick();
+  assert.equal(ui.$('source-body').querySelector('h1').textContent, '다음 문서');
+});
+
 test('issue copy uses the current detail and exports agent context without UI or database metadata', async (t) => {
   const ui = await setup(t);
   Object.assign(ui.records[0], {

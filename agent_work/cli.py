@@ -133,17 +133,13 @@ def parser():
     show_document=document.add_parser('show'); show_document.add_argument('key')
     import_document=document.add_parser('import'); import_document.add_argument('path'); import_document.add_argument('--kind',default='work',choices=['work','session','legacy_global'])
     sub.add_parser('backup')
-    dash=sub.add_parser('dashboard'); dash.add_argument('--port',type=int,default=8788); dash.set_defaults(allow_execution=False)
-    if os.environ.get('TACK_HARNESS')=='1' and Path(__file__).with_name('harness.py').is_file():dash.add_argument('--allow-execution',action='store_true',help='이 프로젝트 하네스에서 명시적 실행 제어 허용')
+    dash=sub.add_parser('dashboard'); dash.add_argument('--port',type=int,default=8788)
     migrate=sub.add_parser('migrate'); migrate.add_argument('--board',type=Path,required=True)
     migrate.add_argument('--notes',type=Path,action='append',default=[]); migrate.add_argument('--active-note',type=Path,action='append',default=[])
     hook=sub.add_parser('hook');hook.add_argument('--json',dest='input',default='-')
     bind=sub.add_parser('bind');bind.add_argument('thread');bind.add_argument('task_id');bind.add_argument('--from-task',dest='expected_task')
     sub.add_parser('doctor')
     usage=sub.add_parser('usage',help='수집된 실행 사용량 조회');usage.add_argument('--goal');usage.add_argument('--role');usage.add_argument('--full',action='store_true',help='최근 100개 실행 내역 포함')
-    if os.environ.get('TACK_HARNESS')=='1' and Path(__file__).with_name('harness.py').is_file():
-        from .orchestration_cli import add_parser
-        add_parser(sub)
     return p
 
 
@@ -186,12 +182,12 @@ def run(args):
         matches=[{**m,'project':r['project']} for r in results for m in search_view(r)['matches']]
         matches.sort(key=lambda m:(sum(t.casefold() in m['title'].casefold() for t in args.query.split()),m['created_at']),reverse=True)
         return emit({'query':args.query,'matches':matches[:args.limit],'has_more':len(matches)>args.limit or any(r['has_more'] for r in results),'errors':errors})
-    project=by_id(args.project) if args.project else resolve(args.workspace,create=args.command in {'init','migrate'} or (args.command=='task' and args.action=='add') or (args.command=='goal' and args.goal_action in {'add','draft'}) or (args.command=='team' and args.team_action=='create'),
+    project=by_id(args.project) if args.project else resolve(args.workspace,create=args.command in {'init','migrate'} or (args.command=='task' and args.action=='add'),
         local=getattr(args,'local',False),name=getattr(args,'name',None),link=getattr(args,'link',None),source_roots=getattr(args,'source_root',None))
     if args.command=='migrate':
         from .migration import migrate
         return emit(migrate(project,args.board,args.notes,args.active_note))
-    readonly=(args.command=='settings' and args.settings_action in {'show','catalog'}) or args.command in {'status','resume','sessions','doctor','usage','search'} or (args.command=='record' and args.record_action!='add') or (args.command=='goal' and args.goal_action in {'list','show','messages'}) or (args.command=='team' and args.team_action in {'list','show','collaboration'}) or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action in {'show','relations'})
+    readonly=args.command in {'status','resume','sessions','doctor','usage','search'} or (args.command=='record' and args.record_action!='add') or (args.command=='document' and args.document_action!='import') or (args.command=='task' and args.action in {'show','relations'})
     if args.command == 'map' and args.map_action == 'show':readonly=True
     from .project_lifecycle import read
     if not readonly and args.command!='dashboard' and read(project['db_path'])['status']=='archived':raise BoardError('보관 프로젝트는 읽기 전용입니다. project restore로 복원해주세요.',409)
@@ -201,12 +197,7 @@ def run(args):
         tracker=Tracker(store,project['workspace'])
         if args.command=='bind':
             tracker.bind(args.thread,args.task_id,args.expected_task);return emit({'thread_id':args.thread,'task_id':args.task_id})
-        return emit({'workspace':project['workspace'],'data_path':str(store.path),'received_hook_events':len(tracker.overview()['observations']),'orchestration':False})
-    if args.command in {'goal','settings','team'}:
-        from .harness import require_enabled
-        require_enabled(project['workspace'])
-        from .orchestration_cli import dispatch
-        return emit(dispatch(args,project,store,payload))
+        return emit({'workspace':project['workspace'],'data_path':str(store.path),'received_hook_events':len(tracker.overview()['observations'])})
     if args.command=='init': return emit(project)
     if args.command == 'map':
         from .task_map import get_map, set_map
@@ -304,12 +295,7 @@ def run(args):
     if args.command=='backup': return emit({'backup':str(store.backup())})
     if args.command=='dashboard':
         from .http import BoardServer
-        harness=os.environ.get('TACK_HARNESS')=='1' and Path(__file__).with_name('harness.py').is_file()
-        if harness:
-            from .harness import require_enabled
-            require_enabled(project['workspace'])
-        if args.allow_execution and not harness:raise BoardError('실행 제어는 프로젝트 로컬 tack-orchestration으로 시작하세요.')
-        server=BoardServer(('127.0.0.1',args.port),store,project,allow_execution=args.allow_execution,harness=harness)
+        server=BoardServer(('127.0.0.1',args.port),store,project)
         print(f'Tack: http://127.0.0.1:{server.server_port}/?project={project["id"]}',flush=True)
         try: server.serve_forever()
         except KeyboardInterrupt: pass

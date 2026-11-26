@@ -553,14 +553,127 @@
     }
   }
 
+  function renderSourceMarkdown(text) {
+    const lines = text.split(/\r?\n/);
+    const fragment = document.createDocumentFragment();
+    const heading = /^(#{1,6})\s+(.+)$/;
+    const fence = /^(`{3,}|~{3,})/;
+    const listItem = /^ {0,3}(?:([-+*])|(\d{1,9})[.)])\s+(.+)$/;
+    const cells = line => line.trim().replace(/^\||(?<!\\)\|$/g, '').split(/(?<!\\)\|/).map(value => value.trim().replace(/\\\|/g, '|'));
+    const tableAt = i => lines[i].includes('|') && lines[i + 1]?.includes('|') &&
+      cells(lines[i + 1]).every(cell => /^:?-{3,}:?$/.test(cell)) && cells(lines[i]).length === cells(lines[i + 1]).length;
+
+    // Document markup stays text. Only recognized Markdown syntax creates DOM nodes.
+    function appendInline(parent, value) {
+      const tokens = /`([^`]+)`|\*\*([^*]+)\*\*|\*([^*]+)\*|(?<!!)\[([^\[\]]+)\]\((https?:\/\/[^\s)]+)\)/gi;
+      let end = 0;
+      for (const match of value.matchAll(tokens)) {
+        parent.append(value.slice(end, match.index));
+        const item = document.createElement(match[1] ? 'code' : match[2] ? 'strong' : match[3] ? 'em' : 'a');
+        item.textContent = match[1] ?? match[2] ?? match[3] ?? match[4];
+        if (match[5]) {
+          item.href = match[5];
+          item.target = '_blank';
+          item.rel = 'noopener noreferrer';
+        }
+        parent.append(item);
+        end = match.index + match[0].length;
+      }
+      parent.append(value.slice(end));
+    }
+
+    function appendBlock(parent, tag, content) {
+      const element = document.createElement(tag);
+      if (content) appendInline(element, content);
+      parent.append(element);
+      return element;
+    }
+
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i++];
+      if (!line.trim()) continue;
+      const title = line.match(heading);
+      const opening = line.match(fence);
+      const entry = line.match(listItem);
+      if (title) {
+        appendBlock(fragment, 'h' + title[1].length, title[2]);
+      } else if (opening) {
+        const closing = new RegExp(`^${opening[1][0]}{${opening[1].length},}\\s*$`);
+        const block = [];
+        while (i < lines.length && !closing.test(lines[i])) block.push(lines[i++]);
+        if (i < lines.length) i++;
+        const pre = appendBlock(fragment, 'pre');
+        appendBlock(pre, 'code').textContent = block.join('\n');
+      } else if (entry) {
+        const ordered = Boolean(entry[2]);
+        const list = appendBlock(fragment, ordered ? 'ol' : 'ul');
+        if (ordered) list.start = Number(entry[2]);
+        let item = entry;
+        while (item && Boolean(item[2]) === ordered) {
+          appendBlock(list, 'li', item[3]);
+          item = lines[i]?.match(listItem);
+          if (!item || Boolean(item[2]) !== ordered) break;
+          i++;
+        }
+      } else if (tableAt(i - 1)) {
+        const wrapper = appendBlock(fragment, 'div');
+        wrapper.className = 'source-table';
+        const table = appendBlock(wrapper, 'table');
+        const headers = cells(line);
+        const head = table.createTHead().insertRow();
+        for (const value of headers) appendBlock(head, 'th', value).scope = 'col';
+        const body = table.createTBody();
+        i++;
+        while (lines[i]?.includes('|') && !heading.test(lines[i]) && !fence.test(lines[i]) && !listItem.test(lines[i])) {
+          const row = body.insertRow();
+          const values = cells(lines[i++]);
+          for (let column = 0; column < headers.length; column++) appendBlock(row, 'td', values[column]);
+        }
+      } else {
+        const paragraph = [line];
+        while (lines[i]?.trim() && !heading.test(lines[i]) && !fence.test(lines[i]) && !listItem.test(lines[i]) && !tableAt(i)) {
+          paragraph.push(lines[i++]);
+        }
+        appendBlock(fragment, 'p', paragraph.join(' '));
+      }
+    }
+    return fragment;
+  }
+
+  let sourceSequence = 0;
   async function openSource(source) {
+    const sequence = ++sourceSequence;
+    const dialog = $('source-dialog');
+    const body = $('source-body');
+    const query = `path=${encodeURIComponent(source.path)}`;
     $('source-title').textContent = source.path;
-    $('source-text').textContent = '문서를 불러오는 중입니다.';
-    $('source-dialog').showModal();
+    body.textContent = '문서를 불러오는 중입니다.';
+    body.setAttribute('aria-busy', 'true');
+    body.scrollTop = 0;
+    if (!dialog.open) dialog.showModal();
     try {
-      $('source-text').textContent = (await request(`/api/source?path=${encodeURIComponent(source.path)}`)).text;
+      const {format, text} = await request(`/api/source?${query}`);
+      if (!dialog.open || sequence !== sourceSequence) return;
+      if (format === 'html') {
+        const frame = document.createElement('iframe');
+        const preview = `/source?${query}&preview=1`;
+        frame.title = source.label || source.path;
+        frame.setAttribute('sandbox', '');
+        frame.setAttribute('referrerpolicy', 'no-referrer');
+        frame.src = window.workUrl ? window.workUrl(preview) : preview;
+        body.replaceChildren(frame);
+      } else if (format === 'markdown') {
+        body.replaceChildren(renderSourceMarkdown(text));
+      } else {
+        const raw = document.createElement('pre');
+        raw.textContent = text;
+        body.replaceChildren(raw);
+      }
     } catch (error) {
-      $('source-text').textContent = error.message;
+      if (dialog.open && sequence === sourceSequence) body.textContent = error.message;
+    } finally {
+      if (sequence === sourceSequence) body.setAttribute('aria-busy', 'false');
     }
   }
 
@@ -973,6 +1086,12 @@
     closeEditor();
   });
   $('close-source').addEventListener('click', () => $('source-dialog').close());
+  $('source-dialog').addEventListener('close', () => {
+    if ($('source-dialog').open) return;
+    sourceSequence++;
+    $('source-body').replaceChildren();
+    $('source-body').setAttribute('aria-busy', 'false');
+  });
   $('task-form').addEventListener('submit', save);
   $('close-qa-completion').addEventListener('click', closeQaCompletion);
   $('cancel-qa-completion').addEventListener('click', closeQaCompletion);

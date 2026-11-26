@@ -13,8 +13,6 @@ from unittest.mock import patch
 from agent_work.projects import resolve,projects,by_id
 from agent_work.project_lifecycle import change,preview,read
 from agent_work.store import Store,BoardError
-from agent_work.orchestration import Orchestrator
-from agent_work.team import Team
 from agent_work.http import BoardServer
 
 class ProjectLifecycleTests(unittest.TestCase):
@@ -26,6 +24,11 @@ class ProjectLifecycleTests(unittest.TestCase):
     def tearDown(self):self.env.stop();self.temp.cleanup()
     def archive(self):return change(self.project,'archive',{'version':1})
     def delete(self,version=2,include=False):return change(self.project,'delete',{'version':version,'confirmation':self.project['name'],'include_backups':include})
+    def seed_legacy_goal(self, **data):
+        with self.store.connect() as db:
+            db.execute('CREATE TABLE goals (id TEXT PRIMARY KEY, task_id TEXT NOT NULL UNIQUE, version INTEGER NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)')
+            db.execute('INSERT INTO goals VALUES (?,?,?,?,?,?)',
+                       ('GOAL-OLD', self.task['id'], 1, json.dumps(data), '2026-01-01', '2026-01-01'))
     def test_archive_restore_preserves_all_records_and_existing_store_recovers(self):
         session=self.store.checkpoint({'task_id':self.task['id'],'goal':'test','next_action':'wait','status':'blocked'})['session']
         self.store.archive_document(self.source,'work');before=self.store.detail(self.task['id']);self.archive()
@@ -54,10 +57,11 @@ class ProjectLifecycleTests(unittest.TestCase):
         session=self.store.checkpoint({'task_id':self.task['id'],'goal':'manual','next_action':'continue'})['session']
         with self.assertRaises(BoardError):self.archive()
         self.store.checkpoint({'version':session['version'],'status':'completed'},session['id'])
-        orch=Orchestrator(self.store,self.workspace);goal=orch.create('Goal',{'acceptance':'test','steps':[{'title':'build','role':'implement','prompt':'test'}],'verification':[[sys.executable,'-m','unittest']]})
-        goal=orch.update(goal['id'],{'worker':'expired-worker','heartbeat':0,'status':'needs_recheck'},goal['version'])
+        self.seed_legacy_goal(worker='expired-worker', heartbeat=0, status='needs_recheck')
         with self.assertRaises(BoardError):self.archive()
-        orch.update(goal['id'],{'worker':'','status':'paused'},goal['version']);self.archive()
+        with self.store.connect() as db:
+            db.execute('UPDATE goals SET data=?', (json.dumps({'status':'paused'}),))
+        self.archive()
     def test_live_transaction_blocks_lifecycle_change(self):
         with self.store.connect():
             with self.assertRaises(BoardError):self.archive()
@@ -70,9 +74,14 @@ class ProjectLifecycleTests(unittest.TestCase):
         self.assertEqual(read(self.store.path)['status'],'archived')
     def test_delete_removes_sessions_goals_messages_and_documents_preserves_other_project_and_backups(self):
         session=self.store.checkpoint({'task_id':self.task['id'],'goal':'test','next_action':'next','status':'completed'})['session']
-        self.store.archive_document(self.source,'work');orch=Orchestrator(self.store,self.workspace)
-        goal=orch.create('Goal',{'acceptance':'test','steps':[{'title':'build','role':'implement','prompt':'test'}],'verification':[[sys.executable,'-m','unittest']]})
-        run,_=orch.run(goal,goal['steps'][0]);orch.run_update(run,status='failed');Team(self.store).emit(goal['id'],'user','test note')
+        self.store.archive_document(self.source,'work')
+        self.seed_legacy_goal(status='failed')
+        with self.store.connect() as db:
+            db.execute('CREATE TABLE executions (id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, task_id TEXT NOT NULL, data TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)')
+            db.execute('INSERT INTO executions VALUES (?,?,?,?,?,?)',
+                       ('EXEC-OLD', 'GOAL-OLD', self.task['id'], json.dumps({'status':'failed'}), '2026-01-01', '2026-01-01'))
+            db.execute('CREATE TABLE team_messages (id TEXT PRIMARY KEY, body TEXT NOT NULL)')
+            db.execute('INSERT INTO team_messages VALUES (?,?)', ('MSG-OLD', 'test note'))
         backup=self.store.backup();other=self.root/'other';other.mkdir();q=resolve(other,create=True);other_store=Store(q['db_path']);keep=other_store.write({'title':'Other project'})['task']
         self.archive();detail=preview(by_id(self.project['id']));self.assertEqual(detail['counts']['sessions'],1);self.assertEqual(detail['counts']['documents'],1)
         result=self.delete();self.assertEqual(result['status'],'deleted');self.assertTrue(backup.exists());self.assertTrue(result['remaining_backup_paths'])
